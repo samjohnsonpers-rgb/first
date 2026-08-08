@@ -1,50 +1,42 @@
+<!-- ============================================================
+     FILE: index.html — Meridian Autonomous Engineering Console
+     Revision: "Render backend" architecture (complete replacement
+     of the removed Netlify/serverless approach).
 
-                        <!DOCTYPE html>
-                        <html lang="en">
-                        <head>
-                            <meta charset="UTF-8">
-                            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <style>
-                body {
-                  background-color: white; /* Ensure the iframe has a white background */
-                }
+     ARCHITECTURE
+       USER -> index.html -> RENDER server.js -> GEMINI API
+                          -> RENDER server.js -> index.html -> USER
 
-                
-              </style>
-                        </head>
-                        <body>
-                            <!-- ============================================================
-     FILE: index.html  (modified in place — full updated file)
-     ------------------------------------------------------------
-     Revision: "function-only routing". Audit results:
+     The browser NEVER talks to Gemini and NEVER holds a key.
+     All Gemini operations flow to one configurable Render backend:
 
-     NO DIRECT BROWSER -> GEMINI CALLS REMAIN
-     - The single request abstraction gmRequest() now targets
-       /api/gemini exclusively. GEMINI_DIRECT, the custom-endpoint
-       override, and the x-goog-api-key browser header were removed.
-     - The Gemini API key no longer exists anywhere in this file:
-       no key input, no key storage, no key transmission. Any key
-       left over in localStorage from earlier revisions is actively
-       deleted on boot.
-     - All other fetch() calls in the app are same-origin UI probes
-       of /api/gemini; no external API origin is referenced.
+       DEFAULT_BACKEND_URL (constant below) or
+       Settings -> Render backend URL (persisted override)
 
-     PRESERVED EXACTLY
-     - Model Routing (Configuration -> Model Routing): write-through
-       persistence + modelFor(); the selected model per job travels
-       in the URL path (/models/{model}:...) straight through the
-       function to Gemini.
-     - All prompts, schemas, request settings, JSON modes, and SSE
-       streaming for run reports — the function passes them through
-       untouched, including streamed chunks.
+     BACKEND CONTRACT the frontend is built against:
+       GET  {backend}/health         -> {ok:true}
+       GET  {backend}/models         -> Gemini model list JSON
+       POST {backend}/gemini         -> { model, contents, system?,
+                    generationConfig?{temperature,maxOutputTokens,
+                    responseMimeType,responseSchema} }
+                    -> Gemini generateContent JSON (or error JSON)
+       POST {backend}/gemini/stream  -> same body, responds with the
+                    SSE stream of Gemini streamGenerateContent
+     Errors come back as {error:{message,source}} with the
+     appropriate HTTP status (400 invalid request, 401 key/auth,
+     404 model/operation, 429 quota, 5xx upstream/backend).
 
-     BEHAVIOR
-     - Boot probes /api/gemini; if the function is missing (plain
-       static hosting / file://), the app reports it clearly instead
-       of silently falling back to direct calls.
-     - Location errors returned through the proxy carry a server-side
-       diagnostic from the function, surfaced via the existing toast
-       and chat error pipeline.
+     FRONTEND AUDIT
+     - Single Gemini abstraction: backendFetch() -> Render only.
+     - Zero Netlify references, zero /api/gemini endpoints, zero
+       direct browser->Gemini requests remain in this file.
+     - Model Routing unchanged & persisted write-through: the model
+       selected per job (planning / implementation / review-summary)
+       is sent as "model" in every backend payload.
+     - Streaming preserved: run reports consume SSE through
+       {backend}/gemini/stream exactly as before.
+     - Any legacy API key / endpoint values left in localStorage by
+       older revisions are deleted on boot.
      ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
@@ -108,9 +100,9 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;opac
 .pitem .ds{font-size:11px;color:var(--tx3);max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pitem .st{margin-left:auto;font:10px var(--mono);color:var(--teal);letter-spacing:.08em}
 .envtag{font:10.5px var(--mono);letter-spacing:.12em;color:var(--tx3);border:1px solid var(--line);border-radius:5px;padding:4px 8px;text-transform:uppercase}
-#keyStateTop{font:10.5px var(--mono);letter-spacing:.08em;padding:4px 9px;border-radius:5px;border:1px solid var(--line);color:var(--tx3);cursor:pointer;text-transform:uppercase;transition:.15s}
-#keyStateTop.linked{color:var(--violet);border-color:rgba(177,140,255,.4)}
-#keyStateTop:hover{border-color:var(--line2)}
+#bkStateTop{font:10.5px var(--mono);letter-spacing:.08em;padding:4px 9px;border-radius:5px;border:1px solid var(--line);color:var(--tx3);cursor:pointer;text-transform:uppercase;transition:.15s}
+#bkStateTop.linked{color:var(--violet);border-color:rgba(177,140,255,.4)}
+#bkStateTop:hover{border-color:var(--line2)}
 #tbSearch{margin-left:auto;display:flex;align-items:center;gap:8px;background:var(--bg1);border:1px solid var(--line);border-radius:8px;padding:6px 12px;color:var(--tx3);cursor:pointer;font:11.5px var(--mono);transition:.15s}
 #tbSearch:hover{border-color:var(--line2);color:var(--tx2)}
 #tbSearch kbd{background:var(--bg3);border:1px solid var(--line2);border-radius:4px;padding:1px 5px;font:10px var(--mono)}
@@ -124,10 +116,10 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;opac
 #pill.paus .pd{background:var(--blue)}
 #avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#2b3c50,#1a2634);border:1px solid var(--line2);display:grid;place-items:center;font:600 11px var(--disp);color:var(--amber)}
 
-#fnBanner{display:none;gap:10px;align-items:center;background:rgba(255,107,107,.08);border:1px solid rgba(255,107,107,.35);border-radius:9px;padding:9px 13px;font-size:12px;color:var(--tx2);margin-bottom:14px}
-#fnBanner.show{display:flex}
-#fnBanner svg{width:15px;height:15px;color:var(--red);flex:none}
-#fnBanner a{color:var(--amber);cursor:pointer;text-decoration:underline}
+#bkBanner{display:none;gap:10px;align-items:center;background:rgba(255,107,107,.08);border:1px solid rgba(255,107,107,.35);border-radius:9px;padding:9px 13px;font-size:12px;color:var(--tx2);margin-bottom:14px}
+#bkBanner.show{display:flex}
+#bkBanner svg{width:15px;height:15px;color:var(--red);flex:none}
+#bkBanner a{color:var(--amber);cursor:pointer;text-decoration:underline}
 
 #main{overflow:hidden;position:relative}
 .view{display:none;height:100%;overflow:auto;padding:20px 22px}
@@ -461,7 +453,7 @@ a.alink:hover{text-decoration:underline}
         <div id="projList"></div>
       </div>
       <span class="envtag">local workspace</span>
-      <span id="keyStateTop" title="Gemini connection — via Netlify Function. Click to configure.">function · checking</span>
+      <span id="bkStateTop" title="Render backend connection — click to configure">backend · checking</span>
       <div id="tbSearch"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>Commands<kbd>⌘K</kbd></div>
       <div id="tokChip"><span>Σ</span><b id="tokTop">0</b><span>tok</span></div>
       <div id="pill" title="Click to pause / resume between steps"><span class="pd"></span><span id="pillTx">IDLE</span></div>
@@ -480,11 +472,11 @@ a.alink:hover{text-decoration:underline}
             <button class="btn pri sm" id="qaBrief">Brief the agent</button>
           </div>
         </div>
-        <div id="fnBanner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.6v.2"/></svg><span>The Netlify Function at <b>/api/gemini</b> is not reachable. Deploy the site to Netlify (with <b>GEMINI_API_KEY</b> set) or run <b>netlify dev</b>. <a id="fnBannerHelp">Setup guide</a></span></div>
+        <div id="bkBanner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.6v.2"/></svg><span>The Render backend is not reachable. Configure the backend URL in <b>Settings → Render backend</b> and make sure the Web Service is deployed. <a id="bkBannerHelp">Setup guide</a></span></div>
         <div id="noProject" style="display:none"></div>
         <div id="consoleBody">
           <div class="kpis">
-            <div class="card kpi"><div class="kl">API requests</div><div class="kv" id="kReq">0</div><div class="kd">via /api/gemini</div></div>
+            <div class="card kpi"><div class="kl">API requests</div><div class="kv" id="kReq">0</div><div class="kd">via Render backend</div></div>
             <div class="card kpi"><div class="kl">Tokens used</div><div class="kv" id="kTok">0</div><div class="kd" id="kTokD">in 0 · out 0</div></div>
             <div class="card kpi"><div class="kl">Median latency</div><div class="kv" id="kLat">—</div><div class="kd">measured per call</div></div>
             <div class="card kpi"><div class="kl">Errors</div><div class="kv" id="kErr">0</div><div class="kd">failed requests</div></div>
@@ -508,7 +500,7 @@ a.alink:hover{text-decoration:underline}
               <div class="feed" id="feedConsole"></div>
             </div>
             <div class="card sp3">
-              <div class="chd"><span class="dot" style="background:var(--teal)"></span><span class="tt">Model mesh</span><div class="rt"><button class="btn ghost sm" id="refreshModels" title="Fetch model list through the function">sync</button></div></div>
+              <div class="chd"><span class="dot" style="background:var(--teal)"></span><span class="tt">Model mesh</span><div class="rt"><button class="btn ghost sm" id="refreshModels" title="Fetch model list through the Render backend">sync</button></div></div>
               <div id="modelRows"></div>
             </div>
             <div class="card sp5">
@@ -627,7 +619,7 @@ a.alink:hover{text-decoration:underline}
       <!-- TELEMETRY -->
       <section class="view" id="view-telemetry">
         <div class="vhead">
-          <div><div class="crumb">telemetry / real usage</div><h1>Telemetry</h1><div class="sub">Measured locally from actual requests sent through the Netlify Function</div></div>
+          <div><div class="crumb">telemetry / real usage</div><h1>Telemetry</h1><div class="sub">Measured locally from actual requests sent through the Render backend</div></div>
           <div class="right"><button class="btn ghost sm" id="telClear">Clear counters</button></div>
         </div>
         <div class="kpis" id="telKpis"></div>
@@ -646,19 +638,21 @@ a.alink:hover{text-decoration:underline}
       <!-- SETTINGS -->
       <section class="view" id="view-settings">
         <div class="vhead">
-          <div><div class="crumb">settings / configuration</div><h1>Configuration</h1><div class="sub">Server connection, model routing, governance and workspace data</div></div>
+          <div><div class="crumb">settings / configuration</div><h1>Configuration</h1><div class="sub">Render backend, model routing, governance and workspace data</div></div>
         </div>
         <div id="setGrid">
-          <div class="card"><div class="chd"><span class="tt">Gemini connection — server-side</span></div>
+          <div class="card"><div class="chd"><span class="tt">Render backend</span></div>
             <div class="cbd">
-              <div style="font-size:12px;color:var(--tx3);margin-bottom:10px">Every Gemini request goes <b style="color:var(--tx2)">Browser → /api/gemini → Netlify Function → Gemini API</b>. The API key lives only in the Netlify environment variable <b style="color:var(--tx2)">GEMINI_API_KEY</b> — it is never stored in, or sent from, this browser. Routing through the server also avoids the browser “User location is not supported” error.</div>
-              <div class="frow2" style="padding-top:4px"><div><div class="fl">Function status</div><div class="fd2" id="fnStatus">checking…</div></div><div class="fc"><span id="fnDot" class="dot" style="width:9px;height:9px;background:var(--tx3)"></span></div></div>
-              <div style="display:flex;gap:9px;align-items:center;margin-top:10px;flex-wrap:wrap">
-                <button class="btn sm" id="fnValidate">Validate connection</button>
+              <div style="font-size:12px;color:var(--tx3);margin-bottom:10px">Every Gemini request goes <b style="color:var(--tx2)">Browser → Render backend → Gemini API</b>. The Gemini API key lives only in the backend's environment variables and is never sent to, stored in, or visible from this browser. Enter the URL of your deployed Render Web Service (no trailing slash).</div>
+              <div style="font:600 10.5px var(--mono);letter-spacing:.12em;color:var(--tx3);text-transform:uppercase;margin-bottom:6px">Backend URL</div>
+              <input class="inp" id="setBackend" placeholder="https://your-backend.onrender.com" spellcheck="false">
+              <div class="frow2" style="padding-top:12px"><div><div class="fl">Backend status</div><div class="fd2" id="bkStatus">checking…</div></div><div class="fc"><span id="bkDot" class="dot" style="width:9px;height:9px;background:var(--tx3)"></span></div></div>
+              <div style="display:flex;gap:9px;align-items:center;margin-top:6px;flex-wrap:wrap">
+                <button class="btn sm" id="bkValidate">Validate connection</button>
                 <span id="keyState" style="font:11px var(--mono);color:var(--tx3)">not validated</span>
               </div>
               <div id="modelCount" style="font:11px var(--mono);color:var(--tx3);margin-top:9px"></div>
-              <div style="font:10.5px var(--mono);color:var(--tx3);margin-top:8px">Set the key in Netlify → Site configuration → Environment variables as GEMINI_API_KEY, then redeploy. Locally, use <b>netlify dev</b> with the same variable.</div>
+              <div style="font:10.5px var(--mono);color:var(--tx3);margin-top:8px">Endpoints used: GET /health · GET /models · POST /gemini · POST /gemini/stream. For local development point this at your local server (e.g. http://localhost:10000), then replace it with the production Render URL after deployment.</div>
             </div>
           </div>
           <div class="card"><div class="chd"><span class="tt">Model routing</span><div class="rt"><span class="tag t-teal">auto-saved on change</span></div></div>
@@ -691,7 +685,7 @@ a.alink:hover{text-decoration:underline}
     </main>
 
     <footer id="statusbar">
-      <div class="grp"><span class="livedot off" id="sbDot"></span><span id="sbConn">gemini · checking function…</span></div>
+      <div class="grp"><span class="livedot off" id="sbDot"></span><span id="sbConn">render backend · checking…</span></div>
       <div class="grp"><span id="sbEngine">engine idle</span></div>
       <div class="rt">
         <span id="sbTok">0 tok</span>
@@ -716,10 +710,21 @@ a.alink:hover{text-decoration:underline}
 
 <script>
 /* ============================================================
-   MERIDIAN console — function-only Gemini routing revision.
-   Single request abstraction (gmRequest) -> /api/gemini ONLY.
-   No browser-side key. No direct Gemini calls anywhere.
+   MERIDIAN console — Render-backend revision.
+   Single Gemini abstraction: backendFetch() -> Render only.
+   The browser never contacts Gemini and never handles the key.
    ============================================================ */
+
+/* ============================================================
+   RENDER BACKEND ENDPOINT — the single configuration value.
+   Paste your deployed Render Web Service URL here, or leave it
+   empty and set it at runtime in Settings → Render backend
+   (the Settings value persists and takes precedence).
+   For local development use e.g. "http://localhost:10000".
+   NEVER put a Gemini API key anywhere in this file.
+   ============================================================ */
+const RENDER_BACKEND_URL = "";
+
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,8);
@@ -754,7 +759,7 @@ $$('.rbtn').forEach(b=>{const v=b.dataset.view;if(v)b.insertAdjacentHTML('afterb
 /* ---------------- persistent store ---------------- */
 const DB_KEY='meridian.workspace.v1';
 function blankDB(){return{
- settings:{models:[],routing:{reason:'',impl:'',review:''},approval:true,autoReview:true,autonomy:'standard',verb:'concise',userName:''},
+ settings:{backendUrl:'',models:[],routing:{reason:'',impl:'',review:''},approval:true,autoReview:true,autonomy:'standard',verb:'concise',userName:''},
  projects:[],activeProjectId:null,
  telemetry:{req:0,tokIn:0,tokOut:0,errors:0,perModel:{},lat:[]}
 };}
@@ -764,8 +769,9 @@ Object.assign(DB,blankDB(),DB);
 DB.settings=Object.assign(blankDB().settings,DB.settings||{});
 DB.settings.routing=Object.assign({reason:'',impl:'',review:''},DB.settings.routing||{});
 DB.telemetry=Object.assign(blankDB().telemetry,DB.telemetry||{});
-/* SECURITY SCRUB: earlier revisions could store a browser-side API
-   key. This revision must never hold one — delete leftovers now. */
+/* SECURITY SCRUB: previous revisions stored browser-side keys or
+   proxy endpoints. This architecture forbids both — delete any
+   leftovers from local storage on boot. */
 if(DB.settings.apiKey!==undefined||DB.settings.endpoint!==undefined){
  delete DB.settings.apiKey;delete DB.settings.endpoint;
  try{localStorage.setItem(DB_KEY,JSON.stringify(DB));}catch(e){}
@@ -779,8 +785,8 @@ const EVENTS=[];
 let currentView='console', currentFile=null, codeTab='source', device='desk';
 let memFilter='all', memQuery='';
 let pvErrors=[];
-let FN_OK=false;      // /api/gemini reachable?
-let proxyReady=null;  // boot probe promise
+let BACKEND_OK=false;    // Render backend reachable?
+let backendReady=null;   // boot probe promise
 
 /* ---------------- toasts / events ---------------- */
 function toast(msg,kind){
@@ -803,77 +809,83 @@ function evLog(kind,text){
  EVENTS.unshift({kind:kind==='err'?'err':'req',html:'<b>'+kind.toUpperCase()+'</b> '+esc(text),ts:Date.now()});
  const el=$('#evlog');if(!el)return;
  const col=kind==='req'?'var(--blue)':kind==='ok'?'var(--teal)':kind==='warn'?'var(--amber)':'var(--red)';
- el.insertAdjacentHTML('beforebegin','');
  el.insertAdjacentHTML('afterbegin','<div class="ev"><span class="et">'+hhmmss(Date.now())+'</span><span class="ek" style="color:'+col+'">'+kind.toUpperCase()+'</span><span style="color:var(--tx2)">'+esc(text)+'</span></div>');
  while(el.children.length>60)el.lastChild.remove();
 }
 
 /* ============================================================
-   GEMINI CLIENT — ONE abstraction, ONE destination: /api/gemini
-   No API key exists in this file. The browser sends only JSON;
-   the Netlify Function adds the server-side GEMINI_API_KEY.
-   Model Routing is preserved: the selected model per job is part
-   of the URL path (/models/{model}:...) and passes through the
-   function to Gemini untouched.
+   RENDER BACKEND CLIENT — the ONLY Gemini communication path.
+   Contract:
+     GET  {backend}/health         -> {ok:true}
+     GET  {backend}/models         -> Gemini model list JSON
+     POST {backend}/gemini         -> {model, contents, system?,
+                generationConfig?} -> Gemini generateContent JSON
+     POST {backend}/gemini/stream  -> same body, SSE pass-through
+   The selected Model Routing model is always sent as "model".
+   The backend adds its server-side key; the browser never sees it.
    ============================================================ */
-const FN_ENDPOINT='/api/gemini';
+function backendBase(){
+ return ((DB.settings.backendUrl||'').trim()||RENDER_BACKEND_URL||'').replace(/\/+$/,'');
+}
+function backendUp(){return BACKEND_OK;}
 
-async function probeFunction(){
- try{
-  const ctl=new AbortController();const t=setTimeout(()=>ctl.abort(),4000);
-  let res;
-  try{res=await fetch(FN_ENDPOINT+'/models',{method:'HEAD',signal:ctl.signal});}
-  catch(e){res=await fetch(FN_ENDPOINT+'/models?pageSize=1',{method:'GET',signal:ctl.signal});}
-  clearTimeout(t);
-  const ct=(res.headers.get('content-type')||'');
-  FN_OK=ct.indexOf('application/json')>=0;
- }catch(e){FN_OK=false;}
- applyFnState();
- return FN_OK;
-}
-function applyFnState(){
- const banner=$('#fnBanner');
- if(banner)banner.classList.toggle('show',!FN_OK&&!!P());
- const dot=$('#fnDot');if(dot)dot.style.background=FN_OK?'var(--teal)':'var(--red)';
- const st=$('#fnStatus');if(st)st.textContent=FN_OK?'reachable at '+FN_ENDPOINT+' — requests route server-side':'not reachable — deploy to Netlify or run netlify dev';
- updateKeyBadge();
-}
-function fnUp(){return FN_OK;}
-function locationHint(msg){
- return /location/i.test(String(msg))
-  ?' NOTE: Google rejected this request on geographic grounds. Since requests now originate from the Netlify Function, this points at the function\'s server-side egress region/IP being restricted — check the key\'s regional eligibility and the function region.'
-  :'';
-}
-
-async function gmRequest(path,bodyObj){
- if(proxyReady)await proxyReady; // destination always resolved first
+async function backendFetch(path,bodyObj,methodOverride){
+ const base=backendBase();
+ if(!base){
+  const e=new Error('Render backend URL is not configured. Open Settings → Render backend and paste your backend URL (or set RENDER_BACKEND_URL in the source).');
+  e.kind='config';throw e;
+ }
  let res;
  try{
-  res=await fetch(FN_ENDPOINT+path,{
-   method:bodyObj?'POST':'GET',
+  res=await fetch(base+path,{
+   method:methodOverride||(bodyObj?'POST':'GET'),
    headers:{'Content-Type':'application/json'}, // no credentials from the browser
    body:bodyObj?JSON.stringify(bodyObj):undefined
   });
  }catch(netErr){
-  const e=new Error('Network failure — the Netlify Function at '+FN_ENDPOINT+' could not be reached. Deploy this site to Netlify (with GEMINI_API_KEY set) or run "netlify dev" locally.');
+  const e=new Error('Backend/network failure — could not reach '+base+'. Verify the Render Web Service is running and allows CORS from this origin.');
   e.kind='network';throw e;
  }
  if(!res.ok){
-  let msg='HTTP '+res.status;
-  try{const j=await res.json();if(j&&j.error&&j.error.message)msg=j.error.message;}catch(e){}
-  const err=new Error(msg);err.status=res.status;
+  let msg='HTTP '+res.status;let src='backend';
+  try{const j=await res.json();if(j&&j.error){msg=j.error.message||msg;src=j.error.source||src;}}catch(e){}
+  const err=new Error(msg);err.status=res.status;err.source=src;
   err.kind=res.status===401?'auth'
-        :res.status===403?'unsupported-or-forbidden'
         :res.status===400?'invalid-request'
+        :res.status===404?(src==='gemini'?'model-error':'unsupported-operation')
         :res.status===429?'quota'
         :res.status>=500?'upstream'
         :'gemini';
-  if(res.status===429)err.message='Quota/rate limit exceeded — '+msg;
-  if(res.status===401)err.message='Authentication failed — '+msg;
+  if(res.status===429)err.message='Rate limit/quota exceeded — '+msg;
+  if(res.status===401)err.message='Backend credential problem — '+msg;
   throw err;
  }
  return res;
 }
+
+async function probeBackend(){
+ const base=backendBase();
+ if(!base){BACKEND_OK=false;applyBackendState();return false;}
+ try{
+  const ctl=new AbortController();const t=setTimeout(()=>ctl.abort(),5000);
+  const res=await fetch(base+'/health',{method:'GET',signal:ctl.signal});
+  clearTimeout(t);
+  BACKEND_OK=res.ok;
+ }catch(e){BACKEND_OK=false;}
+ applyBackendState();
+ return BACKEND_OK;
+}
+function applyBackendState(){
+ const banner=$('#bkBanner');
+ if(banner)banner.classList.toggle('show',!BACKEND_OK&&!!P());
+ const dot=$('#bkDot');if(dot)dot.style.background=BACKEND_OK?'var(--teal)':'var(--red)';
+ const st=$('#bkStatus');if(st){
+  if(!backendBase())st.textContent='not configured — enter the Render backend URL above';
+  else st.textContent=BACKEND_OK?'reachable at '+backendBase()+' — requests route server-side':'not reachable — check the URL, deployment and CORS';
+ }
+ updateBackendBadge();
+}
+
 function recordCall(model,ms,usage){
  const T=DB.telemetry;
  T.req++;
@@ -890,8 +902,10 @@ function recordError(model,msg){
  DB.telemetry.errors++;save();
  evLog('err',model+' · '+msg);
 }
+
+/* Model discovery through the backend. */
 async function fetchModels(){
- const res=await gmRequest('/models?pageSize=200');
+ const res=await backendFetch('/models');
  const j=await res.json();
  const models=(j.models||[])
   .filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent'))
@@ -900,19 +914,20 @@ async function fetchModels(){
  models.sort((a,b)=>a.name.localeCompare(b.name));
  return models;
 }
-function buildBody(contents,opts){
- const body={contents};
- if(opts.system)body.systemInstruction={parts:[{text:opts.system}]};
- const gc={temperature:opts.temperature!=null?opts.temperature:0.4};
+function buildPayload(model,contents,opts){
+ const payload={model,contents};
+ if(opts.system)payload.system=opts.system;
+ const gc={};
+ if(opts.temperature!=null)gc.temperature=opts.temperature;
  if(opts.maxTokens)gc.maxOutputTokens=opts.maxTokens;
  if(opts.json){gc.responseMimeType='application/json';if(opts.schema)gc.responseSchema=opts.schema;}
- body.generationConfig=gc;
- return body;
+ if(Object.keys(gc).length)payload.generationConfig=gc;
+ return payload;
 }
 async function generate(model,contents,opts={}){
  const t0=performance.now();
  let res;
- try{res=await gmRequest('/models/'+encodeURIComponent(model)+':generateContent',buildBody(contents,opts));}
+ try{res=await backendFetch('/gemini',buildPayload(model,contents,opts));}
  catch(e){recordError(model,e.message);throw e;}
  const j=await res.json();
  const ms=Math.round(performance.now()-t0);
@@ -938,12 +953,12 @@ async function generateJson(model,contents,system,schema){
   throw e;
  }
 }
-/* Streaming is preserved: SSE from Gemini passes through the
-   function untouched and is consumed chunk-by-chunk here. */
+/* Streaming preserved: SSE from Gemini is piped through
+   {backend}/gemini/stream and consumed chunk-by-chunk here. */
 async function streamText(model,contents,system,onDelta){
  const t0=performance.now();
  let res;
- try{res=await gmRequest('/models/'+encodeURIComponent(model)+':streamGenerateContent?alt=sse',buildBody(contents,{system,temperature:0.6,maxTokens:4096}));}
+ try{res=await backendFetch('/gemini/stream',buildPayload(model,contents,{system,temperature:0.6,maxTokens:4096}));}
  catch(e){recordError(model,e.message);throw e;}
  const reader=res.body.getReader();const dec=new TextDecoder();
  let buf='',full='',usage={};
@@ -957,18 +972,19 @@ async function streamText(model,contents,system,onDelta){
    const data=line.slice(5).trim();if(!data||data==='[DONE]')continue;
    try{
     const j=JSON.parse(data);
+    if(j.error){const err=new Error(j.error.message||'Stream error');err.kind='gemini';throw err;}
     const t=((j.candidates&&j.candidates[0]&&j.candidates[0].content)?(j.candidates[0].content.parts||[]):[]).map(p=>p.text||'').join('');
     if(t){full+=t;onDelta(full);}
     if(j.usageMetadata)usage=j.usageMetadata;
-   }catch(e){}
+   }catch(e){if(e.kind==='gemini')throw e;}
   }
  }
  recordCall(model,Math.round(performance.now()-t0),usage);
  return full;
 }
-/* MODEL ROUTING — unchanged. The persisted per-job selection is
-   validated against the synced list and placed into the request
-   path, which the function forwards verbatim to Gemini. */
+
+/* MODEL ROUTING — persisted write-through; the selected model per
+   job is placed into every backend payload as "model". */
 function modelFor(role){
  const r=DB.settings.routing;
  const sel=role==='reason'?r.reason:role==='impl'?r.impl:r.review;
@@ -981,7 +997,7 @@ function modelFor(role){
 }
 
 /* ============================================================
-   AGENT RUN — pipeline of real Gemini calls through /api/gemini
+   AGENT RUN — pipeline of real Gemini calls via Render backend
    ============================================================ */
 const PLAN_SCHEMA={type:'OBJECT',properties:{
  summary:{type:'STRING',description:'One paragraph explanation of the approach'},
@@ -1043,7 +1059,7 @@ async function runBrief(text){
  if(RUN.busy){toast('The agent is already executing','warn');return;}
  const p=P();
  if(!p){toast('Create a project first','warn');openProjectModal();return;}
- if(!fnUp()){toast('The Netlify Function at /api/gemini is not reachable — deploy or run netlify dev','err');openHelpModal();return;}
+ if(!backendUp()){toast('The Render backend is not reachable — configure it in Settings','err');openHelpModal();return;}
  if(p.pending&&p.pending.length&&DB.settings.approval){toast('Resolve the pending changes in Code → Changes first','warn');codeTab='changes';setView('code');return;}
  const mReason=modelFor('reason'),mImpl=modelFor('impl'),mReview=modelFor('review');
  if(!mReason||!mImpl||!mReview){toast('Sync the model list before running','warn');setView('settings');return;}
@@ -1157,8 +1173,8 @@ async function runBrief(text){
    p.chat.push({role:'agent',text:'Run aborted by user.',ts:Date.now()});
    act('err','<b>Run aborted</b> by user');toast('Run aborted','warn');
   }else{
-   const kindNote=e.kind==='network'?' (network/function)':e.kind==='auth'?' (authentication)':e.kind==='quota'?' (quota)':e.kind==='invalid-request'?' (invalid request)':e.kind==='unsupported-or-forbidden'?' (unsupported operation)':'';
-   msg.tx.textContent='Run failed'+kindNote+': '+e.message+locationHint(e.message);msg.tx.classList.add('err');
+   const kindNote=e.kind==='network'?' (backend/network)':e.kind==='config'?' (configuration)':e.kind==='auth'?' (authentication)':e.kind==='quota'?' (rate limit)':e.kind==='invalid-request'?' (invalid request)':e.kind==='model-error'?' (model error)':e.kind==='unsupported-operation'?' (unsupported operation)':'';
+   msg.tx.textContent='Run failed'+kindNote+': '+e.message;msg.tx.classList.add('err');
    p.chat.push({role:'agent',text:msg.tx.textContent,ts:Date.now()});
    act('err','<b>Run failed:</b> '+esc(e.message));
    toast(e.message,'err');
@@ -1202,7 +1218,7 @@ function renderChat(){
  const p=P(),box=$('#msgs');box.innerHTML='';
  if(!p){box.innerHTML='<div class="empty" style="margin:auto"><div class="ei">'+IC.chat+'</div>No project selected.<br>Create a project to start working with the agent.</div>';return;}
  if(!p.chat.length){
-  box.innerHTML='<div class="empty" style="margin:auto"><div class="ei">'+IC.zap+'</div><b>Ready when you are.</b><br>Describe what you want built — the agent will plan, write files, review its own changes and report back.<br><span style="font-size:11px">All model calls route through the Netlify Function at /api/gemini.</span></div>';
+  box.innerHTML='<div class="empty" style="margin:auto"><div class="ei">'+IC.zap+'</div><b>Ready when you are.</b><br>Describe what you want built — the agent will plan, write files, review its own changes and report back.<br><span style="font-size:11px">All model calls route through your Render backend.</span></div>';
   return;
  }
  p.chat.forEach(m=>{
@@ -1216,7 +1232,7 @@ function renderChat(){
 function suggestions(){
  const p=P(),out=[];
  if(!p)return out;
- if(!fnUp()){out.push('Why is Gemini offline?');return out;}
+ if(!backendUp()){out.push('Why is the backend offline?');return out;}
  if(!p.files.length){
   out.push('Scaffold this project: index.html, styles.css and app.js');
   if(p.desc)out.push('Build a first version of: '+p.desc);
@@ -1232,7 +1248,7 @@ function renderChips(){
  const box=$('#chips');box.innerHTML='';
  suggestions().forEach(s=>{
   const b=document.createElement('button');b.className='chip';b.textContent=s;
-  b.onclick=()=>{if(RUN.busy)return;if(s==='Why is Gemini offline?'){openHelpModal();return;}$('#input').value=s;sendBrief();};
+  b.onclick=()=>{if(RUN.busy)return;if(s==='Why is the backend offline?'){openHelpModal();return;}$('#input').value=s;sendBrief();};
   box.appendChild(b);
  });
 }
@@ -1544,13 +1560,12 @@ function spark(data,w,h,color){
 }
 function renderModels(){
  const box=$('#modelRows');if(!box)return;box.innerHTML='';
- const T=DB.telemetry;
- if(!fnUp()){box.innerHTML='<div style="padding:16px 14px;font-size:12px;color:var(--tx3)">The Netlify Function is offline.<br>Deploy with GEMINI_API_KEY or run <b>netlify dev</b>, then press <b>sync</b>.</div>';return;}
- if(!DB.settings.models.length){box.innerHTML='<div style="padding:16px 14px;font-size:12px;color:var(--tx3)">Function reachable — press <b>sync</b> to fetch the live model list through it.</div>';return;}
+ if(!backendUp()){box.innerHTML='<div style="padding:16px 14px;font-size:12px;color:var(--tx3)">The Render backend is offline.<br>Configure the backend URL in Settings, then press <b>sync</b>.</div>';return;}
+ if(!DB.settings.models.length){box.innerHTML='<div style="padding:16px 14px;font-size:12px;color:var(--tx3)">Backend reachable — press <b>sync</b> to fetch the live model list through it.</div>';return;}
  const roles={reason:'planning',impl:'implementation',review:'review'};
  Object.entries(roles).forEach(([k,label])=>{
   const name=modelFor(k);
-  const pm=name?T.perModel[name]:null;
+  const pm=name?DB.telemetry.perModel[name]:null;
   const lats=pm?pm.lat.slice(-16):[];
   box.insertAdjacentHTML('beforeend','<div class="mrow"><span class="dot" style="background:'+(k==='reason'?'var(--amber)':k==='impl'?'var(--teal)':'var(--blue)')+'"></span><div style="min-width:0"><div class="mn" style="overflow:hidden;text-overflow:ellipsis">'+esc(name||'—')+'</div><div class="mr">'+label+(pm?' · '+pm.req+' calls':' · idle')+'</div></div><div class="spk">'+(lats.length?spark(lats,70,24,k==='reason'?'#ffb454':k==='impl'?'#3ad6c0':'#6ec3ff'):'')+'</div><div class="lat">'+(lats.length?Math.round(lats[lats.length-1])+'ms':'—')+'</div></div>');
  });
@@ -1558,14 +1573,14 @@ function renderModels(){
 function renderConsole(){
  const p=P();
  $('#autoTag').textContent='autonomy · '+DB.settings.autonomy;
- $('#fnBanner').classList.toggle('show',!FN_OK&&!!p);
+ $('#bkBanner').classList.toggle('show',!BACKEND_OK&&!!p);
  if(!p){
   $('#noProject').style.display='block';$('#consoleBody').style.display='none';
   $('#cSub').textContent='Create a project to begin';
   $('#noProject').innerHTML='<div class="card" style="max-width:520px;margin:6vh auto 0"><div class="chd"><span class="tt">New workspace</span></div><div class="cbd">'+
-   '<div style="color:var(--tx2);font-size:13px;line-height:1.6;margin-bottom:14px">Meridian is an autonomous engineering console. It plans, writes and reviews code through live Gemini calls routed via the Netlify Function, and stores your entire workspace in this browser.</div>'+
+   '<div style="color:var(--tx2);font-size:13px;line-height:1.6;margin-bottom:14px">Meridian is an autonomous engineering console. It plans, writes and reviews code through live Gemini calls routed via your Render backend, and stores your entire workspace in this browser.</div>'+
    '<button class="btn pri" id="npBtn">'+IC.plus+' Create your first project</button>'+
-   '<div style="font:11px var(--mono);color:var(--tx3);margin-top:12px">'+(FN_OK?'netlify function reachable at /api/gemini':'netlify function not reachable yet — see Settings')+'</div></div></div>';
+   '<div style="font:11px var(--mono);color:var(--tx3);margin-top:12px">'+(BACKEND_OK?'render backend reachable':'render backend not configured yet — see Settings')+'</div></div></div>';
   $('#npBtn').onclick=openProjectModal;
   return;
  }
@@ -1599,14 +1614,14 @@ function updateCounters(){
 function renderTelemetry(){
  const T=DB.telemetry;
  $('#telKpis').innerHTML=
-  '<div class="card kpi"><div class="kl">Requests</div><div class="kv">'+fmtN(T.req)+'</div><div class="kd">via /api/gemini</div></div>'+
+  '<div class="card kpi"><div class="kl">Requests</div><div class="kv">'+fmtN(T.req)+'</div><div class="kd">via Render backend</div></div>'+
   '<div class="card kpi"><div class="kl">Tokens</div><div class="kv">'+fmtN(T.tokIn+T.tokOut)+'</div><div class="kd">in '+fmtN(T.tokIn)+' · out '+fmtN(T.tokOut)+'</div></div>'+
   '<div class="card kpi"><div class="kl">Median latency</div><div class="kv">'+(T.lat.length?Math.round(T.lat.map(x=>x.ms).sort((a,b)=>a-b)[Math.floor(T.lat.length/2)])+'ms':'—')+'</div><div class="kd">p95 '+(T.lat.length?Math.round(T.lat.map(x=>x.ms).sort((a,b)=>a-b)[Math.min(T.lat.length-1,Math.floor(T.lat.length*.95))])+'ms':'—')+'</div></div>'+
   '<div class="card kpi"><div class="kl">Errors</div><div class="kv">'+T.errors+'</div><div class="kd">failed requests</div></div>';
  const tb=$('#mTable');
  tb.innerHTML='<tr><th>Model</th><th>Role</th><th>Calls</th><th>Tokens</th><th>Last latency</th></tr>';
  if(!DB.settings.models.length){
-  tb.insertAdjacentHTML('beforeend','<tr><td colspan="5" style="color:var(--tx3);padding:20px 14px">Validate the connection and sync models to see per-model usage here.</td></tr>');
+  tb.insertAdjacentHTML('beforeend','<tr><td colspan="5" style="color:var(--tx3);padding:20px 14px">Validate the backend connection and sync models to see per-model usage here.</td></tr>');
  }else{
   const roleOf=n=>n===modelFor('reason')?'planning':n===modelFor('impl')?'implementation':n===modelFor('review')?'review':'available';
   DB.settings.models.forEach(m=>{
@@ -1638,59 +1653,67 @@ function populateRouting(){
   if(rv)$('#rtReview').value=rv;
  }
  $('#routeHint').textContent=s.models.length
-  ?'Selections are saved automatically the moment you change them and travel in the request path through /api/gemini to Gemini.'
-  :'Validate the connection and sync the model list to configure routing.';
+  ?'Selections are saved automatically the moment you change them; the chosen model is sent with every backend request.'
+  :'Validate the backend connection and sync the model list to configure routing.';
 }
 function renderSettings(){
  const s=DB.settings;
+ $('#setBackend').value=s.backendUrl||RENDER_BACKEND_URL||'';
  $('#tgApproval').classList.toggle('on',s.approval);
  $('#tgReview').classList.toggle('on',s.autoReview);
  $('#setAuto').value=s.autonomy;$('#setVerb').value=s.verb;
  $('#setUser').value=s.userName||'';
  const av=$('#avatar');av.textContent=s.userName?s.userName.trim().split(/\s+/).map(w=>w[0]).join('').slice(0,2).toUpperCase():'·';
  $('#modelCount').textContent=s.models.length?'Synced models: '+s.models.map(m=>m.name).join(', '):'';
- applyFnState();
+ applyBackendState();
  populateRouting();
 }
-/* Validates the full path: browser -> /api/gemini -> function ->
-   Gemini (using the server-side key). Surfaces real errors, incl.
-   missing GEMINI_API_KEY and location rejections. */
-async function validateConnection(){
+/* Validates the full path: browser -> Render backend -> Gemini.
+   Surfaces real errors: config, network/CORS, key problems, quota. */
+async function validateBackend(){
  $('#keyState').textContent='validating…';$('#keyState').style.color='var(--amber)';
+ DB.settings.backendUrl=$('#setBackend').value.trim();save();
+ const ok=await probeBackend();
+ if(!ok){
+  $('#keyState').textContent='failed — backend unreachable';
+  $('#keyState').style.color='var(--red)';
+  toast('Backend validation failed — check the URL, deployment and CORS','err');
+  return false;
+ }
  try{
   const models=await fetchModels();
   DB.settings.models=models;save();
-  FN_OK=true;applyFnState();
   renderSettings();renderModels();renderConsole();renderTelemetry();
-  $('#keyState').textContent='connected · '+models.length+' models via /api/gemini';
+  $('#keyState').textContent='connected · '+models.length+' models via Render backend';
   $('#keyState').style.color='var(--teal)';
-  evLog('ok','connection validated through the function · '+models.length+' models');
-  toast('Connection validated — '+models.length+' Gemini model(s) reachable through the function');
+  evLog('ok','backend validated · '+models.length+' models reachable');
+  toast('Backend validated — '+models.length+' Gemini model(s) reachable');
   return true;
  }catch(e){
   $('#keyState').textContent='failed: '+e.message;
   $('#keyState').style.color='var(--red)';
-  toast('Validation failed: '+e.message+locationHint(e.message),'err');
+  toast('Validation failed: '+e.message,'err');
   return false;
  }
 }
-$('#fnValidate').onclick=validateConnection;
+$('#bkValidate').onclick=validateBackend;
+$('#setBackend').addEventListener('change',()=>{DB.settings.backendUrl=$('#setBackend').value.trim();save();probeBackend();});
 $('#refreshModels').onclick=async()=>{
- if(!fnUp()){openHelpModal();return;}
+ if(!backendUp()){openHelpModal();return;}
  $('#refreshModels').disabled=true;
  try{
   const models=await fetchModels();
   DB.settings.models=models;save();
   renderSettings();renderModels();renderConsole();renderTelemetry();
   toast('Model list synced — '+models.length+' model(s)');
- }catch(e){toast('Sync failed: '+e.message+locationHint(e.message),'err');}
+ }catch(e){toast('Sync failed: '+e.message,'err');}
  $('#refreshModels').disabled=false;
 };
 $('#tgApproval').onclick=()=>{DB.settings.approval=!DB.settings.approval;save();renderSettings();toast('Change approval '+(DB.settings.approval?'required':'disabled'));};
 $('#tgReview').onclick=()=>{DB.settings.autoReview=!DB.settings.autoReview;save();renderSettings();};
 
-/* Model Routing write-through persistence (unchanged): every
-   selection change is stored immediately and honored on reload. */
+/* Model Routing write-through persistence: every selection change
+   is stored immediately and honored across reloads/navigation. */
 function persistRouting(showToast){
  DB.settings.routing={
   reason:$('#rtReason').value||'',
@@ -1705,11 +1728,12 @@ function persistRouting(showToast){
 });
 
 $('#setSave').onclick=()=>{
+ DB.settings.backendUrl=$('#setBackend').value.trim();
  DB.settings.routing={reason:$('#rtReason').value,impl:$('#rtImpl').value,review:$('#rtReview').value};
  DB.settings.autonomy=$('#setAuto').value;
  DB.settings.verb=$('#setVerb').value;
  DB.settings.userName=$('#setUser').value.trim();
- save();renderSettings();renderConsole();updateKeyBadge();
+ save();renderSettings();renderConsole();updateBackendBadge();probeBackend();
  toast('Configuration saved');
 };
 $('#dataExport').onclick=()=>{
@@ -1739,8 +1763,8 @@ function modal(title,desc,bodyHTML){
 function closeModal(){$('#modalOv').classList.remove('open');}
 $('#modalOv').addEventListener('click',e=>{if(e.target.id==='modalOv')closeModal();});
 function openHelpModal(){
- modal('Gemini runs server-side',
- 'This app never calls Google from your browser — that is what fixes the “User location is not supported” error. All requests go through <b>/api/gemini</b>, a Netlify Function that adds the server-side key.<br><br>Setup: 1) Set <b>GEMINI_API_KEY</b> in Netlify → Site configuration → Environment variables. 2) Redeploy (or run <b>netlify dev</b> locally with the same variable). 3) Use <b>Validate connection</b> in Settings.',
+ modal('Gemini runs on your Render backend',
+ 'This app never calls Google from your browser. All requests go to your Render Web Service (<b>server.js</b>), which holds the Gemini API key in its environment variables and forwards calls to Gemini.<br><br>Setup: 1) Deploy the backend (server.js + package.json) as a Render Web Service with the Gemini key set as an environment variable. 2) Enable CORS on the backend for this site\'s origin. 3) Paste the backend URL into <b>Settings → Render backend</b> and press <b>Validate connection</b>.',
  '<div class="mrowBtns"><button class="btn ghost sm" id="hmSettings">Open Settings</button><button class="btn pri sm" id="hmClose">Got it</button></div>');
  $('#hmClose').onclick=closeModal;
  $('#hmSettings').onclick=()=>{closeModal();setView('settings');};
@@ -1761,7 +1785,7 @@ function openProjectModal(){
  $('#npCancel').onclick=closeModal;
  setTimeout(()=>$('#npName').focus(),50);
 }
-$('#fnBannerHelp')&&($('#fnBannerHelp').onclick=openHelpModal);
+$('#bkBannerHelp')&&($('#bkBannerHelp').onclick=openHelpModal);
 
 /* ---------------- projects / topbar ---------------- */
 function afterProjectSwitch(){
@@ -1769,7 +1793,7 @@ function afterProjectSwitch(){
  $('#projName').textContent=p?p.name:'No project';
  currentFile=p&&p.files.length?p.files[0].path:null;
  renderAll();buildPreview();renderChat();renderChips();
- applyFnState();
+ applyBackendState();
 }
 function renderProjList(){
  const el=$('#projList');el.innerHTML='';
@@ -1787,13 +1811,13 @@ function renderProjList(){
 }
 $('#projBtn').onclick=e=>{e.stopPropagation();renderProjList();$('#projList').classList.toggle('open');};
 document.addEventListener('click',()=>$('#projList').classList.remove('open'));
-function updateKeyBadge(){
- const el=$('#keyStateTop'),dot=$('#sbDot'),sb=$('#sbConn');
+function updateBackendBadge(){
+ const el=$('#bkStateTop'),dot=$('#sbDot'),sb=$('#sbConn');
  el.classList.remove('linked');
- if(FN_OK){el.textContent='function · /api/gemini';el.classList.add('linked');dot.classList.remove('off');sb.textContent='gemini · via netlify function (server key)';}
- else{el.textContent='function · offline';dot.classList.add('off');sb.textContent='gemini · netlify function unreachable';}
+ if(BACKEND_OK){el.textContent='backend · linked';el.classList.add('linked');dot.classList.remove('off');sb.textContent='render backend · linked (server key)';}
+ else{el.textContent='backend · offline';dot.classList.add('off');sb.textContent='render backend · unreachable'+(backendBase()?'':' (not configured)');}
 }
-$('#keyStateTop').onclick=()=>setView('settings');
+$('#bkStateTop').onclick=()=>setView('settings');
 
 /* ---------------- navigation ---------------- */
 function setView(v){
@@ -1855,8 +1879,8 @@ const CMDS=[
  {l:'Go to Telemetry',i:'pulse',k:'G 7',f:()=>setView('telemetry')},
  {l:'Go to Settings',i:'gear',k:'G 8',f:()=>setView('settings')},
  {l:'New project',i:'plus',k:'NEW',f:openProjectModal},
- {l:'Validate Gemini connection',i:'plug',k:'NET',f:validateConnection},
- {l:'Help: server-side key setup',i:'info',k:'NET',f:openHelpModal},
+ {l:'Validate Render backend connection',i:'plug',k:'NET',f:validateBackend},
+ {l:'Help: Render backend setup',i:'info',k:'NET',f:openHelpModal},
  {l:'Sync model list',i:'pulse',k:'NET',f:()=>$('#refreshModels').click()},
  {l:'Accept pending changes',i:'check',k:'REV',f:acceptPending},
  {l:'Reject pending changes',i:'x',k:'REV',f:rejectPending},
@@ -1903,7 +1927,7 @@ setInterval(()=>{
 /* ---------------- boot ---------------- */
 function renderAll(){
  renderConsole();renderPlanner();renderCode();renderMemory();renderTelemetry();renderSettings();
- renderCtx();renderPend();updateCounters();updatePill();updateKeyBadge();
+ renderCtx();renderPend();updateCounters();updatePill();updateBackendBadge();
 }
 function boot(){
  if(!DB.projects.length)DB.activeProjectId=null;
@@ -1911,19 +1935,19 @@ function boot(){
  const p=P();
  currentFile=p&&p.files.length?p.files[0].path:null;
 
- /* Probe the Netlify Function once at boot. Every Gemini call
-    awaits this probe inside gmRequest, and the ONLY destination
-    ever used is /api/gemini. */
- proxyReady=probeFunction();
- proxyReady.then(ok=>{
+ /* Probe the Render backend once at boot. Every Gemini call awaits
+    this probe inside backendFetch, and the ONLY destination ever
+    used is the configured Render backend URL. */
+ backendReady=probeBackend();
+ backendReady.then(ok=>{
   renderModels();renderConsole();renderSettings();renderChips();
-  if(ok)evLog('ok','netlify function detected at /api/gemini — all gemini traffic routes server-side');
+  if(ok)evLog('ok','render backend reachable — all gemini traffic routes server-side');
   else{
-   evLog('warn','netlify function not reachable — gemini calls will fail until deployed');
-   if(DB.projects.length)toast('Netlify Function not reachable at /api/gemini — deploy with GEMINI_API_KEY or run netlify dev','warn');
+   evLog('warn',backendBase()?'render backend unreachable — gemini calls will fail':'render backend not configured — set the backend URL in settings');
+   if(DB.projects.length&&!backendBase())setTimeout(openHelpModal,900);
+   else if(DB.projects.length)toast('Render backend not reachable — check Settings','warn');
   }
   if(!DB.projects.length)setTimeout(openProjectModal,900);
-  else if(!ok)setTimeout(openHelpModal,900);
  });
 
  renderAll();buildPreview();renderChat();renderChips();
@@ -1934,181 +1958,3 @@ boot();
 </script>
 </body>
 </html>
-
-
-              <script>
-                              /* ============================================================
-   FILE: netlify/functions/gemini.js
-   ------------------------------------------------------------
-   Restricted Gemini API proxy — the ONLY place in this project
-   that talks to Google and the ONLY place that touches the key.
-
-   Flow:  Browser -> /api/gemini/* -> this function -> Gemini API
-                                   -> back to browser (incl. SSE)
-
-   Credentials:
-   - process.env.GEMINI_API_KEY is the sole credential source.
-   - No client-supplied key is accepted (the browser is not
-     allowed to possess one).
-   - The key is never returned, logged, or forwarded to the client.
-
-   Allowed operations ONLY (no arbitrary proxying):
-   - GET  /models                                 model discovery
-   - POST /models/{model}:generateContent         planning/JSON/chat
-   - POST /models/{model}:streamGenerateContent   streamed reports
-   - POST /models/{model}:embedContent            embeddings
-   The {model} segment is passed through untouched, so the app's
-   Model Routing selections (reasoning/planning, implementation,
-   review/summary) reach Gemini exactly as configured in the UI.
-
-   Everything else -> 4xx. Upstream status codes and error bodies
-   pass through unchanged so the app's error pipeline keeps working.
-
-   LOCATION-ERROR DIAGNOSTICS:
-   If Gemini replies with "User location is not supported...", the
-   request already came from this server — so the annotation tells
-   you Google is rejecting the function's egress region/IP (check
-   the key's region eligibility / function region), not a browser.
-   ============================================================ */
-
-const UPSTREAM_BASE = "https://generativelanguage.googleapis.com/v1beta";
-const OP_RE = /^\/models\/([A-Za-z0-9._-]+):(generateContent|streamGenerateContent|embedContent)$/;
-const MAX_BODY = 6 * 1024 * 1024;
-const TIMEOUT_MS = 120000;
-
-const CORS = {
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, POST, OPTIONS",
-  "access-control-allow-headers": "content-type",
-  "access-control-max-age": "86400",
-};
-
-function jsonResponse(status, obj) {
-  return new Response(JSON.stringify(obj), {
-    status,
-    headers: Object.assign({}, CORS, { "content-type": "application/json" }),
-  });
-}
-
-function safeParse(text) {
-  try { return JSON.parse(text); }
-  catch (e) { return { error: { message: String(text).slice(0, 500) || "Upstream error" } }; }
-}
-
-/* Sub-path after the proxy mount point. Handles both the redirect
-   form (/api/gemini/...) and direct function invocation
-   (/.netlify/functions/gemini/...). */
-function subPathFrom(url) {
-  let p = url.pathname || "/";
-  p = p.replace(/^\/api\/gemini/, "");
-  p = p.replace(/^\/\.netlify\/functions\/gemini/, "");
-  if (!p) p = "/";
-  if (p.charAt(0) !== "/") p = "/" + p;
-  return p;
-}
-
-export default async function geminiProxy(req, context) {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: CORS });
-  }
-  if (req.method !== "GET" && req.method !== "POST") {
-    return jsonResponse(405, { error: { message: "Method not allowed — the Gemini proxy supports GET and POST only." } });
-  }
-
-  const url = new URL(req.url);
-  const sub = subPathFrom(url);
-  const qs = url.searchParams.toString();
-
-  /* ---- route allow-list (no arbitrary URL proxying) ---------- */
-  const isModelList = sub === "/models" && req.method === "GET";
-  const op = sub.match(OP_RE);
-  if (!isModelList && !op) {
-    return jsonResponse(403, {
-      error: {
-        message: "Unsupported Gemini operation: " + req.method + " " + sub +
-          ". The proxy only allows model listing, content generation, streaming generation and embeddings.",
-      },
-    });
-  }
-
-  /* ---- credential: server-side env var ONLY ------------------ */
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    return jsonResponse(401, {
-      error: { message: "GEMINI_API_KEY is not set on the server. Configure it in Netlify -> Site configuration -> Environment variables, then redeploy." },
-    });
-  }
-
-  /* ---- request body validation ------------------------------- */
-  let body;
-  if (req.method === "POST") {
-    body = await req.text();
-    if (body.length > MAX_BODY) {
-      return jsonResponse(413, { error: { message: "Request body too large." } });
-    }
-    if (body) {
-      try { JSON.parse(body); }
-      catch (e) { return jsonResponse(400, { error: { message: "Request body is not valid JSON." } }); }
-    }
-  }
-
-  /* ---- forward upstream (same method, body, query) ----------- */
-  const target = UPSTREAM_BASE + sub + (qs ? "?" + qs : "");
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
-
-  let upstream;
-  try {
-    upstream = await fetch(target, {
-      method: req.method,
-      headers: { "content-type": "application/json", "x-goog-api-key": key },
-      body: req.method === "POST" ? body : undefined,
-      signal: ctl.signal,
-    });
-  } catch (netErr) {
-    clearTimeout(timer);
-    const timedOut = netErr && netErr.name === "AbortError";
-    return jsonResponse(timedOut ? 504 : 502, {
-      error: { message: timedOut ? "Upstream Gemini request timed out." : "Upstream network failure reaching the Gemini API." },
-    });
-  }
-  clearTimeout(timer);
-
-  /* ---- streaming pass-through (SSE preserved) ---------------- */
-  const isStream = !!op && op[2] === "streamGenerateContent";
-  if (isStream && upstream.ok) {
-    return new Response(upstream.body, {
-      status: upstream.status,
-      headers: Object.assign({}, CORS, {
-        "content-type": upstream.headers.get("content-type") || "text/event-stream",
-        "cache-control": "no-cache",
-      }),
-    });
-  }
-
-  const text = await upstream.text();
-  try { context.log.info("gemini proxy " + req.method + " " + sub + " -> " + upstream.status); } catch (e) {}
-
-  if (!upstream.ok) {
-    const j = safeParse(text);
-    /* Location-error diagnostics: the request already originated on
-       the server, so this is a function egress region/IP issue. */
-    if (j && j.error && typeof j.error.message === "string" && /location/i.test(j.error.message)) {
-      j.error.message += " [diagnostic: this request originated from the server-side Netlify Function, so Google is rejecting the function's egress region/IP rather than the user's browser. Verify the key's regional eligibility or deploy the function to a supported region.]";
-    }
-    return jsonResponse(upstream.status, j); // Gemini message preserved
-  }
-
-  return new Response(text, {
-    status: upstream.status,
-    headers: Object.assign({}, CORS, {
-      "content-type": upstream.headers.get("content-type") || "application/json",
-    }),
-  });
-}
-
-
-              </script>
-                        </body>
-                        </html>
-                    
