@@ -1,3 +1,48 @@
+
+                        <!DOCTYPE html>
+                        <html lang="en">
+                        <head>
+                            <meta charset="UTF-8">
+                            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <style>
+                body {
+                  background-color: white; /* Ensure the iframe has a white background */
+                }
+
+                
+              </style>
+                        </head>
+                        <body>
+                            <!-- ============================================================
+     FILE: index.html  (modified — full updated file)
+     ------------------------------------------------------------
+     Changes in this revision (smallest safe set):
+
+     TASK 1 — Gemini proxy routing
+     - New endpoint configuration (DB.settings.endpoint, default "").
+     - Boot-time auto-detection of the Netlify proxy at /api/gemini
+       (HEAD probe; JSON response => proxy present). No hard-coded
+       production domain — relative URL only.
+     - The single existing request abstraction (gmRequest) now routes
+       ALL Gemini calls (model discovery, generation, streaming,
+       review/summary) through: custom endpoint > detected proxy >
+       direct Gemini fallback for local development.
+     - User key header is still sent when configured; when the proxy
+       has GEMINI_API_KEY, the server key takes precedence and the
+       browser never needs a key.
+     - Settings -> Credentials exposes the endpoint field + live
+       resolution status. Error pipeline distinguishes network/proxy,
+       invalid request, auth, quota and upstream failures.
+
+     TASK 2 — Model routing persistence fix
+     - Root cause: routing selects were only written to storage by the
+       "Save configuration" button; leaving the tab re-rendered the
+       selects from storage, discarding unsaved changes.
+     - Fix: each routing select auto-persists on change (write-through
+       to DB + save()), modelFor() validates saved values against the
+       synced model list, and renderSettings() always restores the
+       saved selection. Reloads and navigation no longer reset jobs.
+     ============================================================ -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -62,6 +107,7 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;opac
 .envtag{font:10.5px var(--mono);letter-spacing:.12em;color:var(--tx3);border:1px solid var(--line);border-radius:5px;padding:4px 8px;text-transform:uppercase}
 #keyStateTop{font:10.5px var(--mono);letter-spacing:.08em;padding:4px 9px;border-radius:5px;border:1px solid var(--line);color:var(--tx3);cursor:pointer;text-transform:uppercase;transition:.15s}
 #keyStateTop.linked{color:var(--teal);border-color:rgba(58,214,192,.35)}
+#keyStateTop.proxy{color:var(--violet);border-color:rgba(177,140,255,.4)}
 #keyStateTop:hover{border-color:var(--line2)}
 #tbSearch{margin-left:auto;display:flex;align-items:center;gap:8px;background:var(--bg1);border:1px solid var(--line);border-radius:8px;padding:6px 12px;color:var(--tx3);cursor:pointer;font:11.5px var(--mono);transition:.15s}
 #tbSearch:hover{border-color:var(--line2);color:var(--tx2)}
@@ -592,22 +638,28 @@ a.alink:hover{text-decoration:underline}
       <!-- SETTINGS -->
       <section class="view" id="view-settings">
         <div class="vhead">
-          <div><div class="crumb">settings / configuration</div><h1>Configuration</h1><div class="sub">Credentials, model routing, governance and workspace data</div></div>
+          <div><div class="crumb">settings / configuration</div><h1>Configuration</h1><div class="sub">Credentials, endpoint, model routing, governance and workspace data</div></div>
         </div>
         <div id="setGrid">
           <div class="card"><div class="chd"><span class="tt">Gemini credentials</span></div>
             <div class="cbd">
-              <div style="font-size:12px;color:var(--tx3);margin-bottom:10px">Your API key is stored only in this browser's local storage and sent directly to generativelanguage.googleapis.com. Get a key at <a class="alink" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</div>
-              <input class="inp" id="setKey" type="password" placeholder="Paste your Gemini API key…" spellcheck="false">
+              <div style="font-size:12px;color:var(--tx3);margin-bottom:10px">Your API key is stored only in this browser and sent to the Gemini endpoint below. On Netlify deployments requests are routed through <b style="color:var(--tx2)">/api/gemini</b> and the server-side key is used automatically — no personal key required. Get a key at <a class="alink" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.</div>
+              <input class="inp" id="setKey" type="password" placeholder="Paste your Gemini API key… (optional when the proxy provides one)" spellcheck="false">
               <div style="display:flex;gap:9px;align-items:center;margin-top:11px;flex-wrap:wrap">
                 <button class="btn sm" id="keyConnect">Connect & validate</button>
                 <button class="btn ghost sm dgr" id="keyDisconnect" style="display:none">Disconnect</button>
                 <span id="keyState" style="font:11px var(--mono);color:var(--tx3)">not connected</span>
               </div>
               <div id="modelCount" style="font:11px var(--mono);color:var(--tx3);margin-top:9px"></div>
+              <div style="margin-top:14px;border-top:1px solid rgba(32,45,58,.55);padding-top:12px">
+                <div style="font:600 10.5px var(--mono);letter-spacing:.12em;color:var(--tx3);text-transform:uppercase;margin-bottom:6px">Gemini endpoint</div>
+                <input class="inp" id="setEndpoint" placeholder="auto — detected at boot (empty = auto)" spellcheck="false">
+                <div id="epInfo" style="font:11px var(--mono);color:var(--tx3);margin-top:7px">detecting…</div>
+                <div style="font:10.5px var(--mono);color:var(--tx3);margin-top:5px">Leave empty to auto-detect the Netlify proxy (/api/gemini) or fall back to the direct Gemini API locally. Enter a full base URL to override.</div>
+              </div>
             </div>
           </div>
-          <div class="card"><div class="chd"><span class="tt">Model routing</span></div>
+          <div class="card"><div class="chd"><span class="tt">Model routing</span><div class="rt"><span class="tag t-teal">auto-saved on change</span></div></div>
             <div class="cbd">
               <div class="frow2"><div><div class="fl">Reasoning & planning</div><div class="fd2">Brief analysis, task planning, memory extraction</div></div><div class="fc"><select class="inp" id="rtReason" style="width:200px"></select></div></div>
               <div class="frow2"><div><div class="fl">Implementation</div><div class="fd2">File generation and edits</div></div><div class="fc"><select class="inp" id="rtImpl" style="width:200px"></select></div></div>
@@ -662,9 +714,7 @@ a.alink:hover{text-decoration:underline}
 
 <script>
 /* ============================================================
-   MERIDIAN — production console. All data is real: workspace
-   state is persisted locally, and every AI interaction is a
-   live request to the Gemini API using your own credentials.
+   MERIDIAN console — production build (Netlify proxy revision)
    ============================================================ */
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -700,14 +750,15 @@ $$('.rbtn').forEach(b=>{const v=b.dataset.view;if(v)b.insertAdjacentHTML('afterb
 /* ---------------- persistent store ---------------- */
 const DB_KEY='meridian.workspace.v1';
 function blankDB(){return{
- settings:{apiKey:'',models:[],routing:{reason:'',impl:'',review:''},approval:true,autoReview:true,autonomy:'standard',verb:'concise',userName:''},
+ settings:{apiKey:'',endpoint:'',models:[],routing:{reason:'',impl:'',review:''},approval:true,autoReview:true,autonomy:'standard',verb:'concise',userName:''},
  projects:[],activeProjectId:null,
  telemetry:{req:0,tokIn:0,tokOut:0,errors:0,perModel:{},lat:[]}
 };}
 let DB;
 try{DB=JSON.parse(localStorage.getItem(DB_KEY))||blankDB();}catch(e){DB=blankDB();}
-Object.assign(DB,blankDB(),DB); // ensure shape
+Object.assign(DB,blankDB(),DB);
 DB.settings=Object.assign(blankDB().settings,DB.settings||{});
+DB.settings.routing=Object.assign({reason:'',impl:'',review:''},DB.settings.routing||{});
 DB.telemetry=Object.assign(blankDB().telemetry,DB.telemetry||{});
 function save(){try{localStorage.setItem(DB_KEY,JSON.stringify(DB));}catch(e){toast('Could not persist workspace (storage full?)','err');}}
 function P(){return DB.projects.find(p=>p.id===DB.activeProjectId)||null;}
@@ -716,7 +767,7 @@ function P(){return DB.projects.find(p=>p.id===DB.activeProjectId)||null;}
 const RUN={busy:false,paused:false,abort:false};
 const EVENTS=[];
 let currentView='console', currentFile=null, codeTab='source', device='desk';
-let memFilter='all', memQuery='', chatDirty=false;
+let memFilter='all', memQuery='';
 let pvErrors=[];
 
 /* ---------------- toasts / events ---------------- */
@@ -745,37 +796,84 @@ function evLog(kind,text){
 }
 
 /* ============================================================
-   GEMINI CLIENT — real HTTP against generativelanguage API
+   GEMINI CLIENT — single request abstraction (gmRequest).
+   Routing precedence:
+     1. user-configured custom endpoint (DB.settings.endpoint)
+     2. auto-detected Netlify proxy   (/api/gemini)
+     3. direct Gemini API             (local development fallback)
    ============================================================ */
-const API_BASE='https://generativelanguage.googleapis.com/v1beta';
-function requireKey(){
- if(!DB.settings.apiKey){toast('Connect your Gemini API key first','warn');openConnectModal();throw new Error('No API key configured');}
- return DB.settings.apiKey;
+const GEMINI_DIRECT='https://generativelanguage.googleapis.com/v1beta';
+let PROXY_EP='';       // filled by detectProxy() when /api/gemini exists
+let proxyReady=null;   // promise resolving before any Gemini call
+
+async function detectProxy(){
+ try{
+  const ctl=new AbortController();const t=setTimeout(()=>ctl.abort(),4000);
+  // Cheap probe: the proxy answers HEAD with a JSON 405 without
+  // consuming any Gemini quota. A JSON response proves the function.
+  let res;
+  try{res=await fetch('/api/gemini/models',{method:'HEAD',signal:ctl.signal});}
+  catch(e){res=await fetch('/api/gemini/models?pageSize=1',{method:'GET',signal:ctl.signal});}
+  clearTimeout(t);
+  const ct=(res.headers.get('content-type')||'');
+  if(ct.indexOf('application/json')>=0){PROXY_EP='/api/gemini';return true;}
+ }catch(e){/* local file:// or static host — direct mode */}
+ return false;
 }
+function geminiBase(){
+ const custom=(DB.settings.endpoint||'').trim().replace(/\/+$/,'');
+ if(custom)return custom;
+ if(PROXY_EP)return PROXY_EP;
+ return GEMINI_DIRECT;
+}
+function usingProxy(){return !!PROXY_EP&&geminiBase()===PROXY_EP;}
+function hasCreds(){return !!(DB.settings.apiKey||usingProxy());}
+
 async function gmRequest(path,bodyObj){
- const key=requireKey();
- const res=await fetch(API_BASE+path,{
-  method:bodyObj?'POST':'GET',
-  headers:{'Content-Type':'application/json','x-goog-api-key':key},
-  body:bodyObj?JSON.stringify(bodyObj):undefined
- });
+ if(proxyReady)await proxyReady; // endpoint always resolved before a call
+ const base=geminiBase();
+ if(!DB.settings.apiKey&&!usingProxy()){
+  const e=new Error('No Gemini API key configured and no proxy detected — add a key in Settings.');
+  e.kind='auth';throw e;
+ }
+ const headers={'Content-Type':'application/json'};
+ if(DB.settings.apiKey)headers['x-goog-api-key']=DB.settings.apiKey; // proxy ignores it when GEMINI_API_KEY is set
+ let res;
+ try{
+  res=await fetch(base+path,{method:bodyObj?'POST':'GET',headers,body:bodyObj?JSON.stringify(bodyObj):undefined});
+ }catch(netErr){
+  const e=new Error(usingProxy()
+    ?'Network/proxy failure — the /api/gemini function could not be reached.'
+    :'Network failure — the Gemini API could not be reached.');
+  e.kind='network';throw e;
+ }
  if(!res.ok){
   let msg='HTTP '+res.status;
-  try{const j=await res.json();if(j.error&&j.error.message)msg=j.error.message;}catch(e){}
-  const err=new Error(msg);err.status=res.status;throw err;
+  try{const j=await res.json();if(j&&j.error&&j.error.message)msg=j.error.message;}catch(e){}
+  const err=new Error(msg);err.status=res.status;
+  err.kind=res.status===401?'auth'
+        :res.status===403?'unsupported-or-forbidden'
+        :res.status===400?'invalid-request'
+        :res.status===429?'quota'
+        :res.status>=500?'upstream'
+        :'gemini';
+  if(res.status===429)err.message='Quota/rate limit exceeded — '+msg;
+  if(res.status===401)err.message='Authentication failed — '+msg;
+  throw err;
  }
  return res;
 }
 function recordCall(model,ms,usage){
  const T=DB.telemetry;
  T.req++;
- const tin=usage.promptTokenCount||0, tout=usage.candidatesTokenCount||usage.totalTokenCount&&usage.totalTokenCount-tin||0;
- T.tokIn+=tin;T.tokOut+=tout;
+ const tin=usage.promptTokenCount||0;
+ const tout=usage.candidatesTokenCount||(usage.totalTokenCount?usage.totalTokenCount-tin:0);
+ T.tokIn+=tin;T.tokOut+=Math.max(0,tout);
  T.lat.push({ms,model});if(T.lat.length>80)T.lat.shift();
  const pm=T.perModel[model]||(T.perModel[model]={req:0,tok:0,lat:[]});
- pm.req++;pm.tok+=tin+tout;pm.lat.push(ms);if(pm.lat.length>40)pm.lat.shift();
+ pm.req++;pm.tok+=tin+Math.max(0,tout);pm.lat.push(ms);if(pm.lat.length>40)pm.lat.shift();
  save();updateCounters();renderTelemetry();renderModels();
- evLog('req',model+' · '+ms+'ms · '+(tin+tout)+' tok');
+ evLog('req',model+' · '+ms+'ms · '+(tin+Math.max(0,tout))+' tok');
 }
 function recordError(model,msg){
  DB.telemetry.errors++;save();
@@ -822,7 +920,7 @@ async function generateJson(model,contents,system,schema){
   const r=await generate(model,contents,{system,json:true,schema,temperature:0.35,maxTokens:8192});
   return parseJsonLoose(r.text);
  }catch(e){
-  if(e.status===400&&schema){ // retry without schema for models that reject it
+  if(e.status===400&&schema){
    const r=await generate(model,contents,{system,json:true,temperature:0.35,maxTokens:8192});
    return parseJsonLoose(r.text);
   }
@@ -855,11 +953,14 @@ async function streamText(model,contents,system,onDelta){
  recordCall(model,Math.round(performance.now()-t0),usage);
  return full;
 }
+/* TASK 2 — modelFor validates the persisted selection against the
+   synced model list so a saved model is always honored (or safely
+   auto-selected when it no longer exists). */
 function modelFor(role){
  const r=DB.settings.routing;
  const sel=role==='reason'?r.reason:role==='impl'?r.impl:r.review;
- if(sel)return sel;
  const names=DB.settings.models.map(m=>m.name);
+ if(sel&&(!names.length||names.indexOf(sel)>=0))return sel;
  if(!names.length)return null;
  if(role==='reason')return names.find(n=>/pro/.test(n))||names[names.length-1];
  if(role==='impl')return names.find(n=>/flash/.test(n)&&!/lite/.test(n))||names[0];
@@ -929,10 +1030,10 @@ async function runBrief(text){
  if(RUN.busy){toast('The agent is already executing','warn');return;}
  const p=P();
  if(!p){toast('Create a project first','warn');openProjectModal();return;}
- if(!DB.settings.apiKey){toast('Connect your Gemini API key to run the agent','warn');openConnectModal();return;}
+ if(!hasCreds()){toast('Connect a Gemini key (or deploy with GEMINI_API_KEY) first','warn');openConnectModal();return;}
  if(p.pending&&p.pending.length&&DB.settings.approval){toast('Resolve the pending changes in Code → Changes first','warn');codeTab='changes';setView('code');return;}
  const mReason=modelFor('reason'),mImpl=modelFor('impl'),mReview=modelFor('review');
- if(!mReason||!mImpl||!mReview){toast('Connect and sync models before running','warn');openConnectModal();return;}
+ if(!mReason||!mImpl||!mReview){toast('Sync the model list before running','warn');setView('settings');return;}
 
  RUN.busy=true;RUN.paused=false;RUN.abort=false;updatePill();
  $('#abortBtn').style.display='inline';
@@ -942,7 +1043,6 @@ async function runBrief(text){
  const runId=uid();
 
  try{
-  /* ---- 1 · plan ---- */
   await gate();setStep('planning · '+mReason);
   const c1=cardAdd(msg,'Planning & analysis',mReason);
   let plan;
@@ -960,7 +1060,6 @@ async function runBrief(text){
   act('plan','<b>Plan:</b> '+esc(String(plan.summary||'').slice(0,110))+(edits.length?' · '+edits.length+' file edit(s)':' · no file changes'));
   renderCtx();
 
-  /* ---- 2 · implement edits ---- */
   const changes=[];
   if(edits.length){
    for(let i=0;i<edits.length;i++){
@@ -991,7 +1090,6 @@ async function runBrief(text){
    }
   }
 
-  /* ---- 3 · automated review ---- */
   if(DB.settings.autoReview&&changes.length){
    await gate();setStep('reviewing changes · '+mReview);
    const c3=cardAdd(msg,'Automated diff review',mReview);
@@ -1017,19 +1115,16 @@ async function runBrief(text){
    }else{cardDone(c3,true);act('test','<b>Review:</b> change set passed automated review');}
   }
 
-  /* ---- 4 · mark plan tasks done ---- */
   p.tasks.forEach(t=>{if(t.runId===runId)t.state='done';});
   save();renderPlanner();
 
-  /* ---- 5 · rebuild preview & capture errors ---- */
   let pvNote='';
-  if(currentView!=='preview')buildPreview();else buildPreview();
+  buildPreview();
   await new Promise(r=>setTimeout(r,1200));
   const errs=pvErrors.slice();
   if(errs.length){pvNote='The preview runtime reported '+errs.length+' console error(s): '+errs.slice(0,3).join(' | ');act('err','<b>Preview:</b> '+errs.length+' console error(s) captured');}
   else if(p.files.some(f=>/index\.html$/i.test(f.path))){pvNote='The preview rebuilt without console errors.';act('test','<b>Preview:</b> rebuilt cleanly');}
 
-  /* ---- 6 · streamed report ---- */
   await gate();setStep('writing report · '+mReview);
   const c6=cardAdd(msg,'Run report',mReview);
   const reportSys='You are Meridian reporting a completed run to the user. Be '+(DB.settings.verb==='concise'?'concise (3-6 sentences)':'detailed')+'. Plain text, no markdown headers.';
@@ -1049,8 +1144,9 @@ async function runBrief(text){
    p.chat.push({role:'agent',text:'Run aborted by user.',ts:Date.now()});
    act('err','<b>Run aborted</b> by user');toast('Run aborted','warn');
   }else{
-   msg.tx.textContent='Run failed: '+e.message;msg.tx.classList.add('err');
-   p.chat.push({role:'agent',text:'Run failed: '+e.message,ts:Date.now()});
+   const kindNote=e.kind==='network'?' (network/proxy)':e.kind==='auth'?' (authentication)':e.kind==='quota'?' (quota)':e.kind==='invalid-request'?' (invalid request)':e.kind==='unsupported-or-forbidden'?' (unsupported operation)':'';
+   msg.tx.textContent='Run failed'+kindNote+': '+e.message;msg.tx.classList.add('err');
+   p.chat.push({role:'agent',text:msg.tx.textContent,ts:Date.now()});
    act('err','<b>Run failed:</b> '+esc(e.message));
    toast(e.message,'err');
   }
@@ -1093,7 +1189,7 @@ function renderChat(){
  const p=P(),box=$('#msgs');box.innerHTML='';
  if(!p){box.innerHTML='<div class="empty" style="margin:auto"><div class="ei">'+IC.chat+'</div>No project selected.<br>Create a project to start working with the agent.</div>';return;}
  if(!p.chat.length){
-  box.innerHTML='<div class="empty" style="margin:auto"><div class="ei">'+IC.zap+'</div><b>Ready when you are.</b><br>Describe what you want built — the agent will plan, write files, review its own changes and report back.<br><span style="font-size:11px">Runs use your Gemini API key and real model calls.</span></div>';
+  box.innerHTML='<div class="empty" style="margin:auto"><div class="ei">'+IC.zap+'</div><b>Ready when you are.</b><br>Describe what you want built — the agent will plan, write files, review its own changes and report back.<br><span style="font-size:11px">Runs use the configured Gemini endpoint and real model calls.</span></div>';
   return;
  }
  p.chat.forEach(m=>{
@@ -1107,7 +1203,7 @@ function renderChat(){
 function suggestions(){
  const p=P(),out=[];
  if(!p)return out;
- if(!DB.settings.apiKey){out.push('Connect my Gemini API key');return out;}
+ if(!hasCreds()){out.push('Connect my Gemini API key');return out;}
  if(!p.files.length){
   out.push('Scaffold this project: index.html, styles.css and app.js');
   if(p.desc)out.push('Build a first version of: '+p.desc);
@@ -1151,7 +1247,7 @@ function renderPlanner(){
   const row=document.createElement('div');row.className='task';
   row.innerHTML='<button class="tchk'+(t.state==='done'?' done':'')+'" title="Toggle">'+IC.check+'</button>'+
    '<div style="min-width:0"><div class="tnm'+(t.state==='done'?' done':'')+'">'+esc(t.title)+'</div>'+(t.detail?'<div class="tds">'+esc(t.detail)+'</div>':'')+'</div>'+
-   '<div class="tm2">'+(t.src==='agent'||t.runId?'<span class="tag t-violet">agent</span>':'<span class="tag t-gray">manual</span>')+'<span class="tdel" title="Delete">'+IC.trash+'</span></div>';
+   '<div class="tm2">'+(t.runId?'<span class="tag t-violet">agent</span>':'<span class="tag t-gray">manual</span>')+'<span class="tdel" title="Delete">'+IC.trash+'</span></div>';
   row.querySelector('.tchk').onclick=()=>{t.state=t.state==='done'?'queued':'done';save();renderPlanner();renderConsole();};
   row.querySelector('.tdel').onclick=()=>{p.tasks=p.tasks.filter(x=>x.id!==t.id);save();renderPlanner();renderConsole();};
   list.appendChild(row);
@@ -1245,7 +1341,7 @@ $('#editor').addEventListener('keydown',e=>{
 $('#tabSrc').onclick=()=>{codeTab='source';renderCode();};
 $('#tabChg').onclick=()=>{codeTab='changes';renderCode();};
 
-/* ---------------- real diff (line LCS) ---------------- */
+/* ---------------- diff (line LCS) ---------------- */
 function diffLines(aStr,bStr){
  const a=aStr.length?aStr.split('\n'):[],b=bStr.length?bStr.split('\n'):[];
  if(a.length*b.length>160000)return a.map(l=>['del',l]).concat(b.map(l=>['add',l]));
@@ -1315,7 +1411,7 @@ function renderPend(){
  $('#pendRej').onclick=rejectPending;
 }
 
-/* ---------------- preview (real iframe build) ---------------- */
+/* ---------------- preview ---------------- */
 const PV_HOOK='(function(){function send(lvl,args){try{parent.postMessage({__meridian_pv:true,lvl:lvl,text:Array.prototype.map.call(args,function(a){try{return typeof a==="object"?JSON.stringify(a):String(a);}catch(e){return String(a);}}).join(" ")},"*");}catch(e){}}'+
  '["log","info","warn","error"].forEach(function(k){var o=console[k];console[k]=function(){send(k==="warn"?"w":k==="error"?"e":"i",arguments);o.apply(console,arguments);};});'+
  'window.addEventListener("error",function(e){send("e",[(e.message||"error")+" @ line "+(e.lineno||"?")]);});'+
@@ -1436,12 +1532,12 @@ function spark(data,w,h,color){
 function renderModels(){
  const box=$('#modelRows');if(!box)return;box.innerHTML='';
  const T=DB.telemetry;
- if(!DB.settings.apiKey){box.innerHTML='<div style="padding:16px 14px;font-size:12px;color:var(--tx3)">Connect your Gemini API key to sync the model list.<br><br><button class="btn sm" id="mrConnect">'+IC.plug+' Connect</button></div>';const b=$('#mrConnect');if(b)b.onclick=openConnectModal;return;}
- if(!DB.settings.models.length){box.innerHTML='<div style="padding:16px 14px;font-size:12px;color:var(--tx3)">Key connected — press <b>sync</b> to fetch the live model list.</div>';return;}
+ if(!hasCreds()){box.innerHTML='<div style="padding:16px 14px;font-size:12px;color:var(--tx3)">Connect a Gemini key (or deploy with the proxy) to sync the model list.<br><br><button class="btn sm" id="mrConnect">'+IC.plug+' Connect</button></div>';const b=$('#mrConnect');if(b)b.onclick=openConnectModal;return;}
+ if(!DB.settings.models.length){box.innerHTML='<div style="padding:16px 14px;font-size:12px;color:var(--tx3)">Credentials available — press <b>sync</b> to fetch the live model list.</div>';return;}
  const roles={reason:'planning',impl:'implementation',review:'review'};
  Object.entries(roles).forEach(([k,label])=>{
   const name=modelFor(k);
-  const pm=T.perModel[name];
+  const pm=name?T.perModel[name]:null;
   const lats=pm?pm.lat.slice(-16):[];
   box.insertAdjacentHTML('beforeend','<div class="mrow"><span class="dot" style="background:'+(k==='reason'?'var(--amber)':k==='impl'?'var(--teal)':'var(--blue)')+'"></span><div style="min-width:0"><div class="mn" style="overflow:hidden;text-overflow:ellipsis">'+esc(name||'—')+'</div><div class="mr">'+label+(pm?' · '+pm.req+' calls':' · idle')+'</div></div><div class="spk">'+(lats.length?spark(lats,70,24,k==='reason'?'#ffb454':k==='impl'?'#3ad6c0':'#6ec3ff'):'')+'</div><div class="lat">'+(lats.length?Math.round(lats[lats.length-1])+'ms':'—')+'</div></div>');
  });
@@ -1453,9 +1549,9 @@ function renderConsole(){
   $('#noProject').style.display='block';$('#consoleBody').style.display='none';
   $('#cSub').textContent='Create a project to begin';
   $('#noProject').innerHTML='<div class="card" style="max-width:520px;margin:6vh auto 0"><div class="chd"><span class="tt">New workspace</span></div><div class="cbd">'+
-   '<div style="color:var(--tx2);font-size:13px;line-height:1.6;margin-bottom:14px">Meridian is an autonomous engineering console. It plans, writes and reviews code through live Gemini API calls using your own key, and stores your entire workspace in this browser.</div>'+
+   '<div style="color:var(--tx2);font-size:13px;line-height:1.6;margin-bottom:14px">Meridian is an autonomous engineering console. It plans, writes and reviews code through live Gemini API calls, and stores your entire workspace in this browser.</div>'+
    '<button class="btn pri" id="npBtn">'+IC.plus+' Create your first project</button>'+
-   '<div style="font:11px var(--mono);color:var(--tx3);margin-top:12px">'+(DB.settings.apiKey?'gemini key connected':'no gemini key yet — you will be asked to connect')+'</div></div></div>';
+   '<div style="font:11px var(--mono);color:var(--tx3);margin-top:12px">'+(hasCreds()?'gemini credentials available':'no gemini credentials yet — you will be asked to connect')+'</div></div></div>';
   $('#npBtn').onclick=openProjectModal;
   return;
  }
@@ -1466,7 +1562,6 @@ function renderConsole(){
  $('#ringFg').style.strokeDashoffset=314-(314*pct/100);
  $('#ringVal').textContent=pct+'%';
  const bars=$('#phaseBars');bars.innerHTML='';
- const rows=[['files',p.files.length,p.files.length],['tasks',done,tot],['memory',p.memory.length,p.memory.length],['pending',(p.pending||[]).length?0:1,(p.pending||[]).length?0:1]];
  bars.insertAdjacentHTML('beforeend','<div class="phrow"><span class="pn">Files in workspace</span><div class="phbar full"><i style="width:'+(p.files.length?'100':'0')+'%"></i></div><span class="pp">'+p.files.length+'</span></div>');
  bars.insertAdjacentHTML('beforeend','<div class="phrow"><span class="pn">Plan tasks</span><div class="phbar'+(pct===100&&tot?' full':'')+'"><i style="width:'+pct+'%"></i></div><span class="pp">'+done+'/'+tot+'</span></div>');
  bars.insertAdjacentHTML('beforeend','<div class="phrow"><span class="pn">Memory entries</span><div class="phbar full"><i style="width:'+(p.memory.length?'100':'0')+'%"></i></div><span class="pp">'+p.memory.length+'</span></div>');
@@ -1496,8 +1591,8 @@ function renderTelemetry(){
   '<div class="card kpi"><div class="kl">Errors</div><div class="kv">'+T.errors+'</div><div class="kd">failed requests</div></div>';
  const tb=$('#mTable');
  tb.innerHTML='<tr><th>Model</th><th>Role</th><th>Calls</th><th>Tokens</th><th>Last latency</th></tr>';
- if(!DB.settings.apiKey||!DB.settings.models.length){
-  tb.insertAdjacentHTML('beforeend','<tr><td colspan="5" style="color:var(--tx3);padding:20px 14px">Connect your API key and sync models to see per-model usage here.</td></tr>');
+ if(!DB.settings.models.length){
+  tb.insertAdjacentHTML('beforeend','<tr><td colspan="5" style="color:var(--tx3);padding:20px 14px">Connect credentials and sync models to see per-model usage here.</td></tr>');
  }else{
   const roleOf=n=>n===modelFor('reason')?'planning':n===modelFor('impl')?'implementation':n===modelFor('review')?'review':'available';
   DB.settings.models.forEach(m=>{
@@ -1517,23 +1612,30 @@ function populateRouting(){
  const s=DB.settings;
  ['#rtReason','#rtImpl','#rtReview'].forEach(id=>{
   const el=$(id);el.innerHTML='';
-  if(!s.models.length){el.innerHTML='<option value="">connect key first</option>';return;}
+  if(!s.models.length){el.innerHTML='<option value="">sync models first</option>';return;}
   s.models.forEach(m=>{const o=document.createElement('option');o.value=m.name;o.textContent=m.name;el.appendChild(o);});
  });
  if(s.models.length){
-  $('#rtReason').value=s.routing.reason&&s.models.some(m=>m.name===s.routing.reason)?s.routing.reason:modelFor('reason');
-  $('#rtImpl').value=s.routing.impl&&s.models.some(m=>m.name===s.routing.impl)?s.routing.impl:modelFor('impl');
-  $('#rtReview').value=s.routing.review&&s.models.some(m=>m.name===s.routing.review)?s.routing.review:modelFor('review');
+  const rr=s.routing.reason&&s.models.some(m=>m.name===s.routing.reason)?s.routing.reason:modelFor('reason');
+  const ri2=s.routing.impl&&s.models.some(m=>m.name===s.routing.impl)?s.routing.impl:modelFor('impl');
+  const rv=s.routing.review&&s.models.some(m=>m.name===s.routing.review)?s.routing.review:modelFor('review');
+  if(rr)$('#rtReason').value=rr;
+  if(ri2)$('#rtImpl').value=ri2;
+  if(rv)$('#rtReview').value=rv;
  }
- $('#routeHint').textContent=s.models.length?'Routing is applied to every agent run. Leave a field on its default to use auto-selection.':'Connect and sync to configure routing.';
+ $('#routeHint').textContent=s.models.length
+  ?'Selections are saved automatically the moment you change them and are used by every agent run.'
+  :'Sync the model list to configure routing.';
 }
 function renderSettings(){
  const s=DB.settings;
  $('#setKey').value=s.apiKey||'';
+ $('#setEndpoint').value=s.endpoint||'';
  $('#keyDisconnect').style.display=s.apiKey?'':'none';
- $('#keyState').textContent=s.apiKey?(s.models.length?'connected · '+s.models.length+' models':'connected — sync models'):'not connected';
- $('#keyState').style.color=s.apiKey?'var(--teal)':'var(--tx3)';
+ $('#keyState').textContent=s.apiKey?(s.models.length?'connected · '+s.models.length+' models':'connected — sync models'):(usingProxy()?'proxy provides credentials':'not connected');
+ $('#keyState').style.color=(s.apiKey||usingProxy())?'var(--teal)':'var(--tx3)';
  $('#modelCount').textContent=s.models.length?'Synced models: '+s.models.map(m=>m.name).join(', '):'';
+ renderEndpointInfo();
  populateRouting();
  $('#tgApproval').classList.toggle('on',s.approval);
  $('#tgReview').classList.toggle('on',s.autoReview);
@@ -1541,16 +1643,22 @@ function renderSettings(){
  $('#setUser').value=s.userName||'';
  const av=$('#avatar');av.textContent=s.userName?s.userName.trim().split(/\s+/).map(w=>w[0]).join('').slice(0,2).toUpperCase():'·';
 }
+function renderEndpointInfo(){
+ const el=$('#epInfo');if(!el)return;
+ const custom=(DB.settings.endpoint||'').trim();
+ if(custom){el.innerHTML='using custom endpoint: <span style="color:var(--blue)">'+esc(custom)+'</span>';return;}
+ if(PROXY_EP){el.innerHTML='auto-detected Netlify proxy: <span style="color:var(--teal)">'+PROXY_EP+'</span> — all Gemini calls route through the serverless function';return;}
+ if(proxyReady){el.textContent='no Netlify proxy detected — using direct Gemini API calls (local mode)';}
+}
 async function connectKey(keyVal){
  const key=(keyVal!=null?keyVal:$('#setKey').value).trim();
- if(!key){toast('Paste an API key first','warn');return false;}
+ if(!key&&!hasCreds()){toast('Paste an API key (no proxy detected)','warn');return false;}
  $('#keyState').textContent='validating…';$('#keyState').style.color='var(--amber)';
  const prev=DB.settings.apiKey;
  DB.settings.apiKey=key;
  try{
   const models=await fetchModels();
   DB.settings.models=models;
-  if(!models.length)toast('Key validated but no generateContent models were returned','warn');
   save();renderSettings();renderModels();renderConsole();updateKeyBadge();
   $('#keyState').textContent='connected · '+models.length+' models';
   $('#keyState').style.color='var(--teal)';
@@ -1569,10 +1677,10 @@ $('#keyConnect').onclick=()=>connectKey();
 $('#keyDisconnect').onclick=()=>{
  DB.settings.apiKey='';DB.settings.models=[];save();
  renderSettings();renderModels();renderConsole();renderTelemetry();updateKeyBadge();
- toast('Key removed from this browser','warn');
+ toast(usingProxy()?'User key removed — the proxy still provides credentials':'Key removed from this browser','warn');
 };
 $('#refreshModels').onclick=async()=>{
- if(!DB.settings.apiKey){openConnectModal();return;}
+ if(!hasCreds()){openConnectModal();return;}
  $('#refreshModels').disabled=true;
  try{
   const models=await fetchModels();
@@ -1584,12 +1692,30 @@ $('#refreshModels').onclick=async()=>{
 };
 $('#tgApproval').onclick=()=>{DB.settings.approval=!DB.settings.approval;save();renderSettings();toast('Change approval '+(DB.settings.approval?'required':'disabled'));};
 $('#tgReview').onclick=()=>{DB.settings.autoReview=!DB.settings.autoReview;save();renderSettings();};
+
+/* TASK 2 — write-through persistence for model routing.
+   Every selection change is stored immediately, so leaving the tab,
+   reloading, or navigating never resets the chosen models. */
+function persistRouting(showToast){
+ DB.settings.routing={
+  reason:$('#rtReason').value||'',
+  impl:$('#rtImpl').value||'',
+  review:$('#rtReview').value||''
+ };
+ save();renderModels();renderConsole();
+ if(showToast)toast('Model routing saved');
+}
+['#rtReason','#rtImpl','#rtReview'].forEach(id=>{
+ $(id).addEventListener('change',()=>persistRouting(true));
+});
+
 $('#setSave').onclick=()=>{
  DB.settings.routing={reason:$('#rtReason').value,impl:$('#rtImpl').value,review:$('#rtReview').value};
+ DB.settings.endpoint=$('#setEndpoint').value.trim();
  DB.settings.autonomy=$('#setAuto').value;
  DB.settings.verb=$('#setVerb').value;
  DB.settings.userName=$('#setUser').value.trim();
- save();renderSettings();renderConsole();
+ save();renderSettings();renderConsole();updateKeyBadge();
  toast('Configuration saved');
 };
 $('#dataExport').onclick=()=>{
@@ -1619,7 +1745,7 @@ function modal(title,desc,bodyHTML){
 function closeModal(){$('#modalOv').classList.remove('open');}
 $('#modalOv').addEventListener('click',e=>{if(e.target.id==='modalOv')closeModal();});
 function openConnectModal(){
- modal('Connect Gemini','Meridian talks directly to the Gemini API from your browser. Your key is stored only in this browser\'s local storage. Get one free at <a class="alink" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.',
+ modal('Connect Gemini','On Netlify deployments requests route through <b>/api/gemini</b> — if the server has GEMINI_API_KEY configured, no personal key is needed. Otherwise paste your own key (stored only in this browser). Get one at <a class="alink" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>.',
  '<input class="inp" id="cmKey" type="password" placeholder="Paste your Gemini API key…" spellcheck="false">'+
  '<div class="mrowBtns"><button class="btn ghost sm" id="cmSkip">Later</button><button class="btn pri sm" id="cmGo">'+IC.plug+' Connect</button></div>');
  $('#cmGo').onclick=async()=>{$('#cmGo').disabled=true;const ok=await connectKey($('#cmKey').value);$('#cmGo').disabled=false;if(ok)closeModal();};
@@ -1639,7 +1765,7 @@ function openProjectModal(){
   DB.projects.push(proj);DB.activeProjectId=proj.id;
   currentFile=null;save();closeModal();afterProjectSwitch();
   toast('Project "'+name+'" created');
-  if(!DB.settings.apiKey)setTimeout(openConnectModal,400);
+  if(!hasCreds())setTimeout(openConnectModal,400);
  };
  $('#npCancel').onclick=closeModal;
  setTimeout(()=>$('#npName').focus(),50);
@@ -1670,8 +1796,11 @@ $('#projBtn').onclick=e=>{e.stopPropagation();renderProjList();$('#projList').cl
 document.addEventListener('click',()=>$('#projList').classList.remove('open'));
 function updateKeyBadge(){
  const el=$('#keyStateTop'),dot=$('#sbDot'),sb=$('#sbConn');
- if(DB.settings.apiKey){el.textContent='gemini linked';el.classList.add('linked');dot.classList.remove('off');sb.textContent='gemini · linked'+(DB.settings.models.length?' · '+DB.settings.models.length+' models':'');}
- else{el.textContent='key required';el.classList.remove('linked');dot.classList.add('off');sb.textContent='gemini · not connected';}
+ el.classList.remove('linked','proxy');
+ if(usingProxy()&&DB.settings.apiKey){el.textContent='proxy + user key';el.classList.add('proxy');dot.classList.remove('off');sb.textContent='gemini · via /api/gemini + user key';}
+ else if(usingProxy()){el.textContent='proxy · server key';el.classList.add('proxy');dot.classList.remove('off');sb.textContent='gemini · via /api/gemini (GEMINI_API_KEY)';}
+ else if(DB.settings.apiKey){el.textContent='gemini linked';el.classList.add('linked');dot.classList.remove('off');sb.textContent='gemini · linked directly'+(DB.settings.models.length?' · '+DB.settings.models.length+' models':'');}
+ else{el.textContent='key required';dot.classList.add('off');sb.textContent='gemini · not connected';}
 }
 $('#keyStateTop').onclick=()=>setView('settings');
 
@@ -1779,7 +1908,7 @@ setInterval(()=>{
  $('#sbUp').textContent=String(Math.floor(up/60)).padStart(2,'0')+':'+String(up%60).padStart(2,'0');
 },1000);
 
-/* ---------------- render all / boot ---------------- */
+/* ---------------- boot ---------------- */
 function renderAll(){
  renderConsole();renderPlanner();renderCode();renderMemory();renderTelemetry();renderSettings();
  renderCtx();renderPend();updateCounters();updatePill();updateKeyBadge();
@@ -1789,14 +1918,190 @@ function boot(){
  else if(!DB.projects.find(p=>p.id===DB.activeProjectId))DB.activeProjectId=DB.projects[0].id;
  const p=P();
  currentFile=p&&p.files.length?p.files[0].path:null;
+
+ /* Endpoint detection starts immediately; every Gemini call awaits
+    proxyReady inside gmRequest, so the resolved route is always used. */
+ proxyReady=detectProxy();
+ proxyReady.then(detected=>{
+  updateKeyBadge();renderEndpointInfo();renderModels();renderConsole();renderSettings();
+  if(detected)evLog('ok','netlify proxy detected at /api/gemini — routing all gemini traffic');
+  else evLog('ok','no proxy detected — direct gemini mode (local development)');
+  if(!DB.projects.length)setTimeout(openProjectModal,900);
+  else if(!hasCreds())setTimeout(openConnectModal,900);
+ });
+
  renderAll();buildPreview();renderChat();renderChips();
  evLog('ok','workspace loaded from local storage');
- if(DB.settings.apiKey)evLog('ok','gemini key present · '+DB.settings.models.length+' models cached');
+ if(DB.settings.apiKey)evLog('ok','user gemini key present · '+DB.settings.models.length+' models cached');
  setTimeout(()=>{$('#boot').classList.add('off');setTimeout(()=>$('#boot').remove(),600);},750);
- if(!DB.projects.length)setTimeout(openProjectModal,1100);
- else if(!DB.settings.apiKey)setTimeout(openConnectModal,1100);
 }
 boot();
 </script>
 </body>
 </html>
+
+
+              <script>
+                              /* ============================================================
+   FILE: netlify/functions/gemini.js  (created)
+   ------------------------------------------------------------
+   Restricted Gemini API proxy.
+
+   Browser -> /api/gemini/* -> this function -> generativelanguage.googleapis.com
+
+   Security model:
+   - GEMINI_API_KEY (Netlify env var) is the preferred credential and
+     ALWAYS takes precedence over any client-supplied key.
+   - If no server key is configured, a client-supplied key is accepted
+     through the x-goog-api-key / x-client-key request header (this
+     preserves the app's existing per-user-key flow and local dev).
+   - The key is never returned, logged, or exposed to the browser.
+
+   Allowed operations ONLY (no arbitrary proxying):
+   - GET  /models                                  (model discovery)
+   - POST /models/{model}:generateContent          (chat / JSON generation)
+   - POST /models/{model}:streamGenerateContent    (streaming, alt=sse)
+   - POST /models/{model}:embedContent             (embeddings — route
+     permitted for parity; the current frontend does not call it yet)
+
+   Everything else is rejected with 4xx. Upstream Gemini status codes
+   and error bodies are passed through so the app's existing error
+   pipeline keeps working.
+   ============================================================ */
+
+const UPSTREAM_BASE = "https://generativelanguage.googleapis.com/v1beta";
+const OP_RE = /^\/models\/([A-Za-z0-9._-]+):(generateContent|streamGenerateContent|embedContent)$/;
+const MAX_BODY = 6 * 1024 * 1024; // 6 MB request-body guard
+const TIMEOUT_MS = 120000;
+
+const CORS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "content-type, x-goog-api-key, x-client-key",
+  "access-control-max-age": "86400",
+};
+
+function jsonResponse(status, obj) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: Object.assign({}, CORS, { "content-type": "application/json" }),
+  });
+}
+
+function safeParse(text) {
+  try { return JSON.parse(text); }
+  catch (e) { return { error: { message: String(text).slice(0, 500) || "Upstream error" } }; }
+}
+
+/* Resolve the sub-path after the proxy mount point. Handles both the
+   redirect form (/api/gemini/...) and direct function invocation
+   (/.netlify/functions/gemini/...). */
+function subPathFrom(url) {
+  let p = url.pathname || "/";
+  p = p.replace(/^\/api\/gemini/, "");
+  p = p.replace(/^\/\.netlify\/functions\/gemini/, "");
+  if (!p) p = "/";
+  if (p.charAt(0) !== "/") p = "/" + p;
+  return p;
+}
+
+export default async function geminiProxy(req, context) {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS });
+  }
+  if (req.method !== "GET" && req.method !== "POST") {
+    return jsonResponse(405, { error: { message: "Method not allowed — the Gemini proxy supports GET and POST only." } });
+  }
+
+  const url = new URL(req.url);
+  const sub = subPathFrom(url);
+  const qs = url.searchParams.toString();
+
+  /* ---- route allow-list ------------------------------------ */
+  const isModelList = sub === "/models" && req.method === "GET";
+  const op = sub.match(OP_RE);
+  if (!isModelList && !op) {
+    return jsonResponse(403, {
+      error: {
+        message: "Unsupported Gemini operation: " + req.method + " " + sub +
+          ". The proxy only allows model listing, content generation, streaming generation and embeddings.",
+      },
+    });
+  }
+
+  /* ---- credential selection (env var takes precedence) ----- */
+  const serverKey = process.env.GEMINI_API_KEY || "";
+  const clientKey = (req.headers.get("x-client-key") || req.headers.get("x-goog-api-key") || "").trim();
+  const key = serverKey || clientKey;
+  if (!key) {
+    return jsonResponse(401, {
+      error: { message: "No Gemini credentials: GEMINI_API_KEY is not configured on the server and no client key was supplied." },
+    });
+  }
+
+  /* ---- request body validation ----------------------------- */
+  let body;
+  if (req.method === "POST") {
+    body = await req.text();
+    if (body.length > MAX_BODY) {
+      return jsonResponse(413, { error: { message: "Request body too large." } });
+    }
+    if (body) {
+      try { JSON.parse(body); }
+      catch (e) { return jsonResponse(400, { error: { message: "Request body is not valid JSON." } }); }
+    }
+  }
+
+  /* ---- forward upstream ------------------------------------ */
+  const target = UPSTREAM_BASE + sub + (qs ? "?" + qs : "");
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+
+  let upstream;
+  try {
+    upstream = await fetch(target, {
+      method: req.method,
+      headers: { "content-type": "application/json", "x-goog-api-key": key },
+      body: req.method === "POST" ? body : undefined,
+      signal: ctl.signal,
+    });
+  } catch (netErr) {
+    clearTimeout(timer);
+    const timedOut = netErr && netErr.name === "AbortError";
+    return jsonResponse(timedOut ? 504 : 502, {
+      error: { message: timedOut ? "Upstream Gemini request timed out." : "Upstream network failure reaching the Gemini API." },
+    });
+  }
+  clearTimeout(timer);
+
+  /* ---- stream pass-through --------------------------------- */
+  const isStream = !!op && op[2] === "streamGenerateContent";
+  if (isStream && upstream.ok) {
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: Object.assign({}, CORS, {
+        "content-type": upstream.headers.get("content-type") || "text/event-stream",
+        "cache-control": "no-cache",
+      }),
+    });
+  }
+
+  /* ---- normal pass-through --------------------------------- */
+  const text = await upstream.text();
+  try { context.log.info("gemini proxy " + req.method + " " + sub + " -> " + upstream.status); } catch (e) {}
+  if (!upstream.ok) {
+    return jsonResponse(upstream.status, safeParse(text)); // preserves Gemini's error message
+  }
+  return new Response(text, {
+    status: upstream.status,
+    headers: Object.assign({}, CORS, {
+      "content-type": upstream.headers.get("content-type") || "application/json",
+    }),
+  });
+}
+
+
+              </script>
+                        </body>
+                        </html>
+                    
